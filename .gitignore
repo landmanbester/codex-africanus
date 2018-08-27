@@ -95,6 +95,14 @@ ENV/
 # Rope project settings
 .ropeproject
 
+# Eclipse project settings
+.project
+.pydevproject
+org.eclipse.core.resources.prefs
+
+# Mac
+.DS_Store
+
 # mkdocs documentation
 /site
 
