@@ -6,7 +6,7 @@ from __future__ import print_function
 
 
 import numpy as np
-
+from scipy.special import jv as bessel1
 
 def estimate_kaiser_bessel_beta(W):
     r"""
@@ -128,5 +128,6 @@ def kaiser_bessel_fourier(x, W, beta):
         with the same shape as `x`.
     """
     term = (np.pi*W*x)**2 - beta**2
-    val = np.lib.scimath.sqrt(term).real
-    return np.sin(val)/val
+    val = np.lib.scimath.sqrt(term)
+    Lambda = np.sqrt(2.0/val)*bessel1(0.5, val)
+    return np.sqrt(np.pi)*W*Lambda/(2.0*np.i0(beta))
