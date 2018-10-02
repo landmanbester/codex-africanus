@@ -3,18 +3,23 @@
 
 
 import numpy as np
-
+import dask.array as da
 
 iFs = np.fft.ifftshift
 Fs = np.fft.fftshift
 
+def FFT(x):
+    return da.fft.fftshift(da.fft.fft2(da.fft.ifftshift(x)))
+
+def iFFT(x):
+    return da.fft.fftshift(da.fft.ifft2(da.fft.ifftshift(x)))
 
 def F(x):
-    return Fs(np.fft.fft2(iFs(x), norm='ortho'))
+    return Fs(np.fft.fft2(iFs(x)))
 
 
 def iF(x):
-    return Fs(np.fft.ifft2(iFs(x), norm='ortho'))
+    return Fs(np.fft.ifft2(iFs(x)))
 
 
 def PSF_response(image, PSF_hat, Sigma):
@@ -81,6 +86,35 @@ def diag_probe(A, dim, maxiter=2000, tol=1e-8, mode="Bernoulli"):
     return D
 
 
+def guessmatrix(operator, M, N, diagonly=True):
+    '''
+    Compute the covariance matrix by applying a given operator (F*Phi^T*Phi) on different delta functions
+    '''
+    from scipy.sparse import coo_matrix
+    from scipy.sparse import csc_matrix
+
+    # Nx, Ny = imsize
+    if diagonly:
+        maxnonzeros = min(M, N)
+        operdiag = np.zeros(maxnonzeros, dtype='complex')
+    else:
+        #         matrix = np.zeros((M, N))               # HUGE
+        matrix = csc_matrix((M, N))  # economic storage
+
+    for i in np.arange(N):
+        deltacol = coo_matrix(([1], ([i], [0])), shape=(N, 1))
+        currcol = operator(deltacol.toarray()).flatten()
+        if diagonly:
+            if i > maxnonzeros: break
+            operdiag[i] = currcol[i]
+        else:
+            matrix[:, i] = currcol[:, np.newaxis]
+
+    if diagonly:
+        matrix = coo_matrix((operdiag, (np.arange(maxnonzeros), np.arange(maxnonzeros))), shape=(M, N))
+
+    return matrix
+
 if __name__=="__main__":
     # first construct a positive semi-definite operator
     Asqrt = np.random.randn(25, 10) + 1.0j*np.random.randn(25, 10)
@@ -93,13 +127,17 @@ if __name__=="__main__":
     Aop = lambda x: A.dot(x)
     dim = A.shape[0]
     diag_estimate = diag_probe(Aop, dim)
+    diag_estimate2 = np.diag(guessmatrix(Aop, 10, 10).toarray())
+
+    print A.shape
+    print diag_estimate2
 
     x = np.linspace(0, 1.5*diag_true.max(), 100)
     import matplotlib.pyplot as plt
     plt.figure('diag')
     plt.plot(x, x, 'k')
     plt.plot(diag_true.real, diag_estimate.real, 'rx')
-    plt.plot(diag_true.imag, diag_estimate.imag)
+    plt.plot(diag_true.real, diag_estimate2.real, 'b+')
     plt.show()
 
 
