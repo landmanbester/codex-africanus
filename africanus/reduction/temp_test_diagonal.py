@@ -63,7 +63,7 @@ if not npix%2:
 
 print("You need to use at least npix = ", npix)
 
-pad_factor = 2
+pad_factor = 1
 padding = int(npix*pad_factor)
 pad_pix = npix + 2*padding
 
@@ -163,7 +163,7 @@ LT_pad = lambda v: vis_to_im(v, uvw_dask, lm_pad_dask, frequency_dask)/sqrtwsum
 # plt.colorbar()
 
 PSF_hat = FFT(LT_pad(weights_dask).reshape([pad_pix, pad_pix]))  #.compute()
-
+# PSF_hat = FFT(LT(weights_dask).reshape(npix, npix))
 # plt.figure('PSF hat real')
 # plt.imshow(PSF_hat.real)
 # plt.colorbar()
@@ -205,19 +205,23 @@ PSF_hat = FFT(LT_pad(weights_dask).reshape([pad_pix, pad_pix]))  #.compute()
 # print("Self adjointness of R: ", np.abs(LHS - RHS))
 
 # Test that PSF convolution and M give the same answer
-vec = np.exp(-(ll_pad**2 + mm_pad**2)*100000)
-#vec = np.zeros([npix, npix])
+# vec = np.exp(-(ll_pad**2 + mm_pad**2)*100)
+vec = np.zeros([npix, npix])
+vec[npix//4, npix//4] = 1.0
+vec = np.pad(vec, padding, mode='constant')
+vec = F(vec)
 # vec[np.random.randint(0, npix), np.random.randint(0, npix)] = 1
-#vec[npix//2, npix//2] = 1.0
-# vec = np.random.randn(npix, npix)
-# plt.figure('in')
-# plt.imshow(vec)
+# vec[3*npix//4, npix//3] = 1.0
+# vec = np.random.randn(pad_pix, pad_pix)
+# plt.figure('in real')
+# plt.imshow(vec.real)
+# plt.colorbar()
+# plt.figure('in imag')
+# plt.imshow(vec.imag)
 # plt.colorbar()
 # vec = np.pad(vec, padding, mode='constant')
 # vec = np.ones([pad_pix, pad_pix])
 vec_dask = da.from_array(vec, chunks=(pad_pix, pad_pix))
-vec_dask_flat = da.from_array(vec.reshape(pad_pix**2, 1), chunks=(pad_pix**2, 1))
-
 # # convolve with PSF
 # vec_hat = FFT(vec_dask)
 # vec_hat *= PSF_hat
@@ -250,9 +254,18 @@ Mhat_op2 = lambda x: (PSF_hat * x).compute()
 
 res2 = Mhat_op2(vec_dask)
 
-Mhat_op = lambda x: FFT(LT_pad(weights_dask * L_pad(da.real(iFFT(x)).reshape(pad_pix**2, nchan))).reshape(pad_pix, pad_pix)).compute()
+# Mhat_op = lambda x: FFT(LT_pad(weights_dask * L_pad(da.real(iFFT(x)).reshape(pad_pix**2, nchan))).reshape(pad_pix, pad_pix)).compute()
+Mhat_op = lambda x: FFT(LT(weights_dask * L(x)).reshape(npix, npix)).compute()
 
-res = Mhat_op(vec_dask)
+# try probing operator
+from africanus.reduction.psf_redux import guessmatrix
+res = guessmatrix(Mhat_op, nrow, npix**2)
+
+plt.figure('diag Mop via probing')
+plt.plot(res.real, 'kx')
+
+
+#res = Mhat_op(vec_dask)
 
 # plt.figure('M op')
 # plt.imshow(res.real)
@@ -262,36 +275,36 @@ res = Mhat_op(vec_dask)
 # plt.imshow(res2.real)
 # plt.colorbar()
 #
-# plt.figure('diff')
+# plt.figure('diff real')
 # plt.imshow(res2.real - res.real)
 # plt.colorbar()
 #
-# plt.figure('ratio')
-# plt.imshow(res.real/res2.real)
+# plt.figure('diff imag')
+# plt.imshow(res2.imag - res.imag)
 # plt.colorbar()
+#
+# # plot it
+# hdu = fits.PrimaryHDU(res.real)
+# hdul = fits.HDUList([hdu])
+# hdul.writeto('M_op.fits', overwrite=True)
+# hdul.close()
+#
+# # plot it
+# hdu = fits.PrimaryHDU(res2.real)
+# hdul = fits.HDUList([hdu])
+# hdul.writeto('PSF_conv.fits', overwrite=True)
+# hdul.close()
 
-# plot it
-hdu = fits.PrimaryHDU(res.real)
-hdul = fits.HDUList([hdu])
-hdul.writeto('M_op.fits', overwrite=True)
-hdul.close()
-
-# plot it
-hdu = fits.PrimaryHDU(res2.real)
-hdul = fits.HDUList([hdu])
-hdul.writeto('PSF_conv.fits', overwrite=True)
-hdul.close()
-
-# plot it
-tmp = PSF_hat.compute().real
-tmp /= tmp.max()
-hdu = fits.PrimaryHDU(tmp)
-hdul = fits.HDUList([hdu])
-hdul.writeto('PSF_hat.fits', overwrite=True)
-hdul.close()
+# # plot it
+# tmp = PSF_hat.compute().real
+# tmp /= tmp.max()
+# hdu = fits.PrimaryHDU(tmp)
+# hdul = fits.HDUList([hdu])
+# hdul.writeto('PSF_hat.fits', overwrite=True)
+# hdul.close()
 
 # plt.figure('uv')
 # plt.plot(uvw[:, 0], uvw[:, 1], 'rx')
 # plt.plot(-uvw[:, 0], -uvw[:, 1], 'rx')
-#
-# plt.show()
+
+plt.show()

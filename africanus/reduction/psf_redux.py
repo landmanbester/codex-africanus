@@ -86,34 +86,27 @@ def diag_probe(A, dim, maxiter=2000, tol=1e-8, mode="Bernoulli"):
     return D
 
 
-def guessmatrix(operator, M, N, diagonly=True):
+def guessmatrix(operator, M, N):
     '''
     Compute the covariance matrix by applying a given operator (F*Phi^T*Phi) on different delta functions
     '''
     from scipy.sparse import coo_matrix
     from scipy.sparse import csc_matrix
 
-    # Nx, Ny = imsize
-    if diagonly:
-        maxnonzeros = min(M, N)
-        operdiag = np.zeros(maxnonzeros, dtype='complex')
-    else:
-        #         matrix = np.zeros((M, N))               # HUGE
-        matrix = csc_matrix((M, N))  # economic storage
-
+    #maxnonzeros = min(M, N)
+    operdiag = np.zeros(N, dtype='complex')
     for i in np.arange(N):
-        deltacol = coo_matrix(([1], ([i], [0])), shape=(N, 1))
-        currcol = operator(deltacol.toarray()).flatten()
-        if diagonly:
-            if i > maxnonzeros: break
-            operdiag[i] = currcol[i]
-        else:
-            matrix[:, i] = currcol[:, np.newaxis]
+        # deltacol = coo_matrix(([1], ([i], [0])), shape=(N, 1))
+        deltacol = np.zeros((N, 1))
+        deltacol[i] = 1.0
+        deltacol = da.from_array(deltacol, chunks=(N, 1))
+        currcol = operator(deltacol).flatten()
+        #if i > maxnonzeros: break
+        operdiag[i] = currcol[i]
 
-    if diagonly:
-        matrix = coo_matrix((operdiag, (np.arange(maxnonzeros), np.arange(maxnonzeros))), shape=(M, N))
+    #matrix = coo_matrix((operdiag, (np.arange(maxnonzeros), np.arange(maxnonzeros))), shape=(M, N))
 
-    return matrix
+    return operdiag
 
 if __name__=="__main__":
     # first construct a positive semi-definite operator
@@ -127,7 +120,7 @@ if __name__=="__main__":
     Aop = lambda x: A.dot(x)
     dim = A.shape[0]
     diag_estimate = diag_probe(Aop, dim)
-    diag_estimate2 = np.diag(guessmatrix(Aop, 10, 10).toarray())
+    diag_estimate2 = guessmatrix(Aop, 10, 10)
 
     print A.shape
     print diag_estimate2
@@ -139,5 +132,7 @@ if __name__=="__main__":
     plt.plot(diag_true.real, diag_estimate.real, 'rx')
     plt.plot(diag_true.real, diag_estimate2.real, 'b+')
     plt.show()
+
+
 
 
