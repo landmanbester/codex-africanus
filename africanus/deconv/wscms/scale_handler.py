@@ -9,6 +9,7 @@ from ...util.docs import DocstringTemplate
 
 import numba
 import numpy as np
+from scipy.signal import convolve2d
 
 
 def set_scales(fwhm0, max_scale=100):
@@ -82,6 +83,49 @@ def GaussianSymmetricFT(sigma, x0, y0, u, v, rhosq, amplitude=1.0):
     :return: 
     """
     return amplitude * np.exp(-2.0j * np.pi * v * x0 - 2.0j * np.pi * u * y0 - 2 * np.pi ** 2 * rhosq * sigma ** 2)
+
+def set_best_scale(dirty, kernels, bias):
+    nscales = bias.size
+
+    # get max and location for zero scale
+    maxdirty = dirty.max()
+    p, q = np.argwhere(dirty == maxdirty)
+    iscale = 0
+
+    # convolve with scale kernels and keep track of max
+    npix = dirty.shape[0]
+    for scale in range(1, nscales):
+        kernel = kernels[scale]
+        npixbox = kernel.shape[0]
+        npad = (npix-npixbox)//2.0
+        kernel = np.pad(kernel, npad, mode='constant')
+        convdirty = convolve2d(dirty, kernel, mode='same')
+
+        convmaxdirty = convdirty.max()
+        # update maxdirty and position if new scale is more relevant
+        if np.abs(maxdirty) < np.abs(convmaxdirty) * bias[scale]:
+            maxdirty = convmaxdirty
+            p, q = np.argwhere(convdirty == maxdirty)
+            iscale = scale
+
+    if iscale == 0:
+        return dirty, iscale
+    else:
+        return convdirty, iscale
+
+def set_convolved_psf(psf, kernel):
+    npix = psf.shape[0]
+    npixbox = kernel.shape[0]
+    npad = (npix - npixbox)//2
+    kernel = np.pad(kernel, npad, mode='constant')
+
+    convpsf = convolve2d(psf, kernel, mode='same')
+    conv2psf = convolve2d(convpsf, kernel, mode='same')
+
+    return convpsf, conv2psf
+
+
+
 
 
 if __name__=="__main__":
