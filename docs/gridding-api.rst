@@ -24,6 +24,7 @@ function (usually refered to as the taper) in image space.
 
 
 .. _convolution-filter-api:
+
 Filters
 -------
 
@@ -43,6 +44,7 @@ API
 .. autodata:: ConvolutionFilter
 
 .. _kaiser-bessel-filter:
+
 Kaiser Bessel
 ~~~~~~~~~~~~~
 
