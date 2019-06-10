@@ -35,7 +35,7 @@ def estimate_kaiser_bessel_beta(W):
     return 2.34*W
 
 
-def kaiser_bessel(u, W, beta):
+def kaiser_bessel(u, W, beta, J=1):
     r"""
     Compute a 1D Kaiser Bessel filter as defined
     in `Selection of a Convolution Function
@@ -51,7 +51,7 @@ def kaiser_bessel(u, W, beta):
     W : int
         Width of the filter
     beta : float, optional
-        Kaiser Bessel shape parameter
+        Kaiser Bessel shape parameter times filter width
 
     Returns
     -------
@@ -63,12 +63,21 @@ def kaiser_bessel(u, W, beta):
     hW = W // 2
     assert np.all(-hW <= u) & np.all(u <= hW)
 
-    param = 1 - (2 * u / W)**2
-    param[param < 0] = 0  # Zero negative numbers
-    return np.i0(beta * np.sqrt(param)) / np.i0(beta)
+    param = 1.0 - (2 * u / W)**2
+    # param = 1.0 - (u / hW) ** 2  # LB - integer or float division?
+
+    # print(param)
+
+    if not np.all(param >= 0.0):
+        raise ValueError("Illegal filter positions %s" % param)
+
+    # LB - use J or W here?
+    return np.i0(beta * J * np.sqrt(param)) / np.i0(beta * J)
+    # return np.i0(beta * np.sqrt(param)) / np.i0(beta)
+    # return np.i0(beta * W * np.sqrt(param)) / np.i0(beta * W)
 
 
-def kaiser_bessel_with_sinc(u, W, oversample, beta, normalise=True):
+def kaiser_bessel_with_sinc(full_support, oversampling, beta, normalise=False):
     """
     Produces a filter composed of Kaiser Bessel multiplied by a sinc.
 
@@ -76,11 +85,9 @@ def kaiser_bessel_with_sinc(u, W, oversample, beta, normalise=True):
 
     Parameters
     ----------
-    u : :class:`numpy.ndarray`
-        Filter positions
-    W : int
-        Width of the filter
-    oversample : int
+    full_support : int
+        Full support of the filter
+    oversampling : int
         Oversampling factor
     beta : float
         Kaiser Bessel shape parameter
@@ -92,9 +99,11 @@ def kaiser_bessel_with_sinc(u, W, oversample, beta, normalise=True):
     :class:`numpy.ndarray`
         Filter with the same shape as `u`
     """
-    kb = kaiser_bessel(u, W, beta)
-    kb *= oversample
-    kb *= np.sinc(u / oversample)
+    W = full_support * oversampling
+    u = np.arange(W, dtype=np.float64) - W // 2
+
+    sinc = np.sinc(u / oversampling)
+    kb = sinc * kaiser_bessel(u, W, beta)
 
     if normalise:
         kb /= np.trapz(kb, u)
@@ -102,7 +111,7 @@ def kaiser_bessel_with_sinc(u, W, oversample, beta, normalise=True):
     return kb
 
 
-def kaiser_bessel_fourier(x, W, beta):
+def kaiser_bessel_fourier(x, W, beta, J):
     r"""
     Computes the Fourier Transform of a 1D Kaiser Bessel filter.
     as defined in `Selection of a Convolution Function
@@ -127,6 +136,51 @@ def kaiser_bessel_fourier(x, W, beta):
         Fourier Transform of the Kaiser Bessel,
         with the same shape as `x`.
     """
-    term = (np.pi*W*x)**2 - beta**2
-    val = np.lib.scimath.sqrt(term).real
-    return np.sin(val)/val
+    from scipy.special import jv as bessel1
+    term = (np.pi * J * x) ** 2 - (beta * J)**2
+    # term = (np.pi * W * x) ** 2 - (beta * W) ** 2
+    val = np.lib.scimath.sqrt(term)
+    Lambda = bessel1(0.5, val)/np.sqrt(val/2.0)
+    # return (np.sqrt(np.pi) * (W//2.0) * Lambda / np.i0(beta * W)).real
+    return (np.sqrt(np.pi) * J * Lambda / (2.0 * np.i0(beta * J))).real
+    # return (np.sqrt(np.pi) * (J//2) * Lambda / (np.i0(beta * J))).real
+
+
+def wsclean_kaiser_bessel_with_sinc(filter_support, oversample, beta):
+    """
+    Reproduction of wsclean's WStackingGridder::makeKaiserBesselKernel
+    """
+    W = filter_support*oversample
+    hW = W // 2
+    filter_ratio = 1.0 / np.float64(oversample)
+
+    half_sinc = np.empty(hW+1, dtype=np.float64)
+    x = np.arange(0, hW+1, dtype=np.float64)
+
+    # Assumption: oversample is not placed in the divisor because
+    # it is factored out by norm_factor
+    half_sinc[0] = 1.0 / oversample
+
+    for i in range(1, hW+1):
+        x = float(i)
+        half_sinc[i] = np.sin(np.pi*x/oversample) / (np.pi*x)
+
+    norm_factor = np.float64(oversample) / np.i0(beta)
+    kernel = np.empty(W, dtype=np.float64)
+
+    for i in range(0, hW+1):
+        term = float(i) / hW
+        term = beta * np.sqrt(1.0 - (term*term))
+        kernel[hW + i] = half_sinc[i] * np.i0(term) * norm_factor
+        # kernel[hW + i] = np.i0(term) * norm_factor
+    # term = x / hW
+    # term *= term
+    # term[:] = -term
+    # term += 1.0
+
+    # kernel[hW:] = half_sinc * np.i0(beta * np.sqrt(term)) * norm_factor
+
+    for i in range(0, hW+1):
+        kernel[i] = kernel[W - 1 - i]
+
+    return kernel

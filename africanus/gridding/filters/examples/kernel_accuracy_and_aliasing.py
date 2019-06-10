@@ -7,13 +7,12 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numba
 import numpy as np
 from scipy import fftpack
-import pytest
+import matplotlib.pyplot as plt
 
 from africanus.constants import c as lightspeed
-from africanus.gridding.filters.kaiser_bessel_filter import kaiser_bessel, kaiser_bessel_fourier
+from africanus.gridding.filters.kernels import kaiser_bessel, kaiser_bessel_corrector
 
 Fs = fftpack.fftshift
 iFs = fftpack.ifftshift
@@ -21,172 +20,160 @@ FFT = fftpack.fft
 iFFT = fftpack.ifft
 
 
-def vis_to_im_impl(vis, uvw, lm, im_of_vis):
-    # For each source
+def vis_to_im(vis, uvw, lm, im_of_vis):
     for source in range(lm.shape[0]):
         l = lm[source]
-
-        # For each uvw coordinate
         for row in range(uvw.shape[0]):
             u = uvw[row]
-
-            # e^(-2*pi*(l*u + m*v + n*w)/c)
             real_phase = 2 * np.pi * l * u
-
             im_of_vis[source] += np.cos(real_phase) * vis[row].real - np.sin(real_phase) * vis[row].imag
 
-    return im_of_vis
+def im_to_vis(im, uvw, lm, vis_of_im):
+    for row in range(uvw.shape[0]):
+        u = uvw[row]
+        for source in range(lm.shape[0]):
+            l = lm[source]
+            real_phase = 2 * np.pi * l * u
+            vis_of_im[row] += im[source] * np.exp(1.0j*real_phase)
 
-def grid(vis, uvw, conv_filter, oversample, cell_size, grid_data):
 
-    nx = grid_data.shape[0]
-    half_x = nx // 2
-    half_support = (conv_filter.shape[0] // oversample) // 2
+def grid_analytic_kernel(vis, uvw, conv_filter, half_support, cell_size, grid_data):
+    """
+    Here we assume we have an analytic kernel so that the interpolation weights
+    can be evaluated exactly (no snapping). Thus conv_filter is a function which
+    takes only the frequency at which it should be evaluated where the frequencies
+    are given as numbers between -half_support and half_support.
+    """
 
-    # Similarity Theorem
-    # https://www.cv.nrao.edu/course/astr534/FTSimilarity.html
-    # Scale UV coordinates
+    # size of the over-sampled grid
+    npix = grid_data.shape[0]
+    assert npix % 2 == 0  # assuming even grid for now
+    half_x = npix//2
+    
+    # we scale the frequencies to lie on a grid between 0 and npix.
+    # of course we need to make sure that we have at least half_support
+    # empty pixels next to uvw.max and uvw.min. This should be taken 
+    # into account when selecting the pixel size 
     # u_max = 1.0/cell_size
-    # u_cell_size = u_max/nx
+    # scaled_u = uvw * npix/u_max  # equivalently npix * cell_size which is Ben's scaling factor of
+    scaling_factor = npix * cell_size
+    for row, val in enumerate(vis):
+        scaled_u = uvw[row]*scaling_factor
+        # get the pixel below (this way diff is always <=0)
+        disc_u = int(np.floor(scaled_u))
 
-    u_scale = nx * cell_size
+        # get the difference between this and the exact value
+        diff = disc_u - scaled_u
 
-    for r in range(vis.shape[0]):
-        # put in fractions of cell size
-        scaled_u = uvw[r] * u_scale
+        # get frequencies
+        lower = -half_support + 1 + diff
+        # upper = half_support + 1 + diff if diff else half_support+1
+        nu = lower + np.arange(2*half_support)
 
-        exact_u = half_x + scaled_u
-        disc_u = int(np.round(exact_u))
+        # evaluate kernel at these locations
+        conv_weights = conv_filter(nu)
 
-        frac_u = exact_u - disc_u
-        # base_os_u = int(np.floor(frac_u*oversample + 0.5))
-        base_os_u = -int(round(frac_u * oversample))
-
-        # print(exact_u, disc_u, frac_u, base_os_u, frac_u * oversample)
-        # print(base_os_u)
-        # print(exact_u, disc_u, frac_u, base_os_u)
-
-        lower_u = disc_u - half_support      # Inclusive
-        upper_u = disc_u + half_support + 1  # Exclusive
-
-        # print(exact_u, disc_u, lower_u, upper_u)
-
-        # grid_data[disc_u] = vis[r]
-
-        for ui, grid_u in enumerate(range(lower_u, upper_u)):
-
-            # print(oversample//2 + base_os_u + ui * oversample)
-            conv_weight = conv_filter[oversample//2 + base_os_u + ui * oversample]
-            # print(grid_u, ui * oversample, conv_weight, vis[r] * conv_weight)
-            grid_data[grid_u] += vis[r] * conv_weight
-
+        # smear visibility onto grid
+        lower = half_x + disc_u-half_support+1
+        upper = half_x + disc_u+half_support+1 # if diff else half_x + disc_u+half_support
+        for filter_i, grid_i in enumerate(range(lower, upper)):
+            grid_data[grid_i] += conv_weights[filter_i] * val
     return grid_data
-
-def nfft_psi(x, m, sigma, N):
-    n = sigma*N
-    b = np.pi * (2 - 1.0/sigma)
-    tmp1 = np.sqrt(m**2 - n**2*x**2)
-    tmp2 = np.sqrt(n**2*x**2 - m**2)
-    return np.where(np.abs(x) < m/n, np.sinh(b*tmp1)/tmp1, np.sin(b*tmp2)/tmp2)
-
-def nfft_psihat(k, m, sigma, N):
-    n = sigma*N
-    b = np.pi * (2 - 1.0/sigma)
-    tmp = np.sqrt(b**2 - (2*np.pi*k/n)**2)
-    return np.where(np.abs(k) < n*(1-1.0/(2*sigma)), np.i0(m*tmp, 0.0))
-
+    
 
 def test_oned_gridding():
-    filter_width = 5
-    oversample = 3
-    beta = 2.34
+    # set up image space stuffs
     cell_size = 0.0001
-    grid_size = 21
-
-    vis = np.array([1.0 + 0.0j], dtype=np.complex128)
+    npix = 128
+    lm_extents = cell_size*(npix // 2)
+    lm = -lm_extents + np.arange(npix) * cell_size
+    print(lm)
+    dft_dirty = np.zeros((npix), dtype=np.float64)
+    
+    # set up visibility space stuffs
+    vis = np.array([1.0 + 0.0j], dtype=np.complex128)  # continuous visibility
+    padding_frac = 2.0  # amount to pad the image by
+    grid_size = int(npix*padding_frac)  # size of the regular grid
+    npad = (grid_size - npix)//2
+    assert npix + 2*npad == grid_size
     u_max = 1.0 / cell_size
-    u_cell_size = u_max / grid_size
+    uvw = np.array([0.15*u_max], dtype=np.float64)  # continuous coordinate
 
-    os_step = u_cell_size/oversample  # cell_size / os
-    posn = 0
-    uvw = np.array([posn * os_step], dtype=np.float64)
-    # uvw = np.array([0.0], dtype=np.float64)
-    width = filter_width*oversample
+    # Compute the DFT result
+    vis_to_im(vis, uvw, lm, dft_dirty)
 
-    u = np.arange(width, dtype=np.float64) - width // 2
-    print(u)
-    # u = np.linspace(-filter_width//2+1, filter_width//2, filter_width * oversample)
-    # print(u)
+    # set up gridding kernel
+    half_support = 6
+    beta = 2.34  # KB factor compare to 2.34
+    conv_filter = lambda nu: kaiser_bessel(nu, half_support, beta=beta)
 
-    # conv_filter = kaiser_bessel(u, width, beta, J=filter_width)
-    conv_filter = kaiser_bessel(u, width, beta, J=filter_width)
-    import matplotlib.pyplot as plt
-    plt.figure('kernel')
-    plt.plot(conv_filter, 'k')
-    plt.show()
-
+    # grid the data
     oned_grid = np.zeros(grid_size, dtype=np.complex128)
+    grid_analytic_kernel(vis, uvw, conv_filter, half_support, cell_size, oned_grid)
 
-    oned_grid = grid(vis, uvw, conv_filter, oversample, cell_size, oned_grid)
+    # get the Fourier transform (remembering to undo the scaling that numpy applies internally)
+    oned_grid_fft = (Fs(iFFT(iFs(oned_grid)))).real[npad:-npad] * grid_size #/np.sqrt(grid_size)
 
-    # put cf on oversampled grid
-    nfull = grid_size * oversample
-    cffull = np.zeros(nfull)
-    center = nfull//2 + posn - 1
-    Icf = np.arange(center - filter_width * oversample//2, center + filter_width * oversample//2 + 1)
-    cffull[Icf] = conv_filter
+    # compute the taper
+    taper = kaiser_bessel_corrector(half_support, npix, grid_size, beta=beta)
+    # print(oned_grid_fft)
+    # print(taper)
 
-    # cffullhat = Fs(iFFT(iFs(cffull))).real * nfull
-
-    # plt.figure('grid')
-    # plt.plot(np.arange(grid_size), oned_grid.real, 'b')
-    # plt.stem(np.arange(0, grid_size, 1.0 / oversample), np.ones(grid_size * oversample), linefmt='r--', markerfmt='')
-    # plt.stem(np.arange(grid_size), np.ones(grid_size), linefmt='k-', markerfmt='')
-    # plt.plot(np.arange(0, grid_size, 1.0/oversample), cffull, 'g')
+    # plt.figure('taper')
+    # plt.plot(taper)
     # plt.show()
 
-    lm_extents = cell_size*(grid_size // 2)
-    lm = np.linspace(-lm_extents, lm_extents, grid_size)
-    dft_grid = np.zeros((oned_grid.shape[0]), dtype=oned_grid.dtype)
-
-    vis_to_im_impl(vis, uvw, lm, dft_grid)
-    oned_grid_fft = Fs(iFFT(iFs(oned_grid))).real
-
-    oned_grid_fft *= grid_size
-
-
-    # u = (np.arange(grid_size, dtype=np.float64) - ((grid_size - 1) // 2)) / (grid_size * oversample)
-    u = (np.arange(grid_size, dtype=np.float64) - ((grid_size - 1) // 2)) / (grid_size)
-    print(u)
-    taper = kaiser_bessel_fourier(u, width, beta, J=filter_width)
-
-    taper_opt = oned_grid_fft / dft_grid
-
-    # taper_slow = give_cn_slow(u, conv_filter, filter_width, oversample)
-
-    plt.figure('taper')
-    plt.plot(np.arange(grid_size), taper, 'k')
-    plt.plot(np.arange(grid_size), taper_opt, 'r')
-    # plt.plot(np.arange(grid_size), taper_slow, 'g')
-    # plt.plot(np.arange(0, grid_size, 1.0/oversample), cffullhat, 'b')
-    plt.show()
-
-
-    oned_grid_fft /= taper
+    # correct for tapering
+    dirty = oned_grid_fft / taper
 
     plt.figure('compare')
-    plt.plot(dft_grid.squeeze().real, label='dft')
-    plt.plot(oned_grid_fft.real, label='grid')
+    plt.plot(dft_dirty.squeeze().real, label='dft')
+    plt.plot(dirty.real, label='grid')
     plt.legend()
     plt.show()
 
-    # plt.figure('diff')
-    # plt.plot(dft_grid.squeeze().real - oned_grid_fft.real, label='real')
-    # plt.plot(dft_grid.squeeze().imag - oned_grid_fft.imag, label='imag')
-    # plt.legend()
-    # plt.show()
+    SSE = np.sum((dirty - dft_dirty)**2)
 
-    # print(np.stack([dft_grid.squeeze(), oned_grid_fft]))
-    # print(dft_grid.squeeze().real - oned_grid_fft.real)
+    print("Total SSE = ", SSE)
 
-test_oned_gridding()
+def set_data_no_aliasing(nvis, nsource, npix):
+    # simulation params
+    uvw = -np.pi + 2*np.pi * np.random.random(nvis)
+    u_max = np.abs(uvw).max()
+    cell_size = 0.8/(2*u_max)  # to ensure Nyquist sampling + then some
+    assert npix % 2 == 0  # ionly set up for even images
+    lm_extents = cell_size*(npix // 2)
+    nsource = 5
+    l_source = -0.75*lm_extents + 1.5*lm_extents*np.random.random(nsource)  # no aliases
+    im = 0.1 + np.random.random(nsource)  # flux
+    # get dft vis
+    vis = np.zeros(nvis, dtype=np.complex128)
+    im_to_vis(im, uvw, l_source, vis)
+    # make dirty image 
+    lm = -lm_extents + np.arange(npix) * cell_size
+    dirty = np.zeros(npix, dtype=np.float64)
+    vis_to_im(vis, uvw, lm, dirty)
+    return vis, dirty, uvw, lm
+
+def dirty_via_gridding(vis, uvw, conv_filter, corrector, half_support, cell_size, npix, grid_size):
+    npad = (grid_size - npix)//2  # must be even
+    assert npix + 2*npad == grid_size
+    oned_grid = np.zeros(grid_size, dtype=np.complex128)
+    grid_analytic_kernel(vis, uvw, conv_filter, half_support, cell_size, oned_grid)
+    dirty = (Fs(iFFT(iFs(oned_grid)))).real[npad:-npad] * grid_size
+    taper = corrector(half_support, npix, grid_size)
+    dirty /= taper
+    return dirty
+
+nvis = 100
+nsource = 5
+npix = 128
+vis, dirty, uvw, lm = set_data_no_aliasing(nvis, nsource, npix)
+
+half_support = 3
+cell_size = lm[1] - lm[0]
+grid_size = int(2*npix)  # padding by factor of 2
+beta = 2.34
+conv_filter = lambda nu: kaiser_bessel(nu, half_support, beta)
+# kaiser_bessel_corrector(beta, half_support, npix, grid_size)
+corrector = lambda half_support, npix, grid_size: kaiser_bessel_corrector(beta, half_support, npix, )
