@@ -125,24 +125,26 @@ def test_psf_subtraction(plot):
 
     # V = R(I)
     # Created a padded image, FFT into the centre
-    fft_image = np.zeros((2*ny, 2*nx), dtype=np.complex128)
-    fft_image[ny - ny//2:ny + ny//2, nx - nx//2:nx + nx//2] = (
-                fftshift(fft2(ifftshift(image))))
+    npad = nx//2
+    idx_unpad = slice(npad, -npad)
+    image_padded = np.pad(image, npad, mode='constant')
+    fft_image = fftshift(fft2(ifftshift(image)))
 
     assert np.sum(fft_image) == ny*nx
 
     vis = degrid(fft_image[:, :, None], uvw, weights, wavelengths,
-                 conv_filter, 2*cell_size, dtype=np.complex128)
+                 conv_filter, cell_size, dtype=np.complex128)
 
     assert vis.shape == (rows, chan, 1)
 
     # I^D = R+(V)
-    grid_vis = np.zeros((2*ny, 2*nx, 1), dtype=np.complex128)
-    grid_vis[ny - ny//2:ny + ny//2, nx - nx//2:nx + nx//2, :] = (
-                grid(vis, uvw, flags, weights, wavelengths,
-                     conv_filter, 2*cell_size, ny=ny, nx=nx))
+    grid_vis = grid(vis, uvw, flags, weights, wavelengths,
+                     conv_filter, cell_size, ny=2*ny, nx=2*nx)
 
     dirty = fftshift(ifft2(ifftshift(grid_vis[:, :, 0]))).real
+    # unpad
+    dirty = dirty[idx_unpad, idx_unpad]
+    # taper should be applied here
 
     assert grid_vis.dtype == np.complex128
     assert dirty.dtype == np.float64
@@ -152,6 +154,9 @@ def test_psf_subtraction(plot):
                       conv_filter, cell_size, ny=2*ny, nx=2*nx)
 
     psf = fftshift(ifft2(ifftshift(grid_unity[:, :, 0]))).real
+    # unpad 
+    psf = psf[idx_unpad, idx_unpad]
+    # apply taper here
 
     assert grid_unity.dtype == np.complex128
     assert psf.dtype == np.float64
@@ -165,11 +170,10 @@ def test_psf_subtraction(plot):
 
     psf, dirty = norm_psf, norm_dirty
 
+    # Done by unpadding
     # Extract the centre of the PSF and the dirty image
-    centre_psf = psf[ny - ny//2:ny + ny//2, nx - nx//2:nx + nx//2].copy()
-    centre_dirty = dirty[ny - ny//2:ny + ny//2, nx - nx//2:nx + nx//2].copy()
-
-    assert centre_psf.shape == centre_dirty.shape
+    # centre_psf = psf[ny - ny//2:ny + ny//2, nx - nx//2:nx + nx//2].copy()
+    # centre_dirty = dirty[ny - ny//2:ny + ny//2, nx - nx//2:nx + nx//2].copy()
 
     if plot:
         try:
@@ -178,34 +182,29 @@ def test_psf_subtraction(plot):
             pass
         else:
 
-            plt.subplot(1, 4, 1)
-            plt.imshow(centre_dirty, cmap="cubehelix")
+            plt.subplot(1, 3, 1)
+            plt.imshow(dirty, cmap="cubehelix")
             plt.title("CENTRE DIRTY")
             plt.colorbar()
 
-            plt.subplot(1, 4, 2)
-            plt.imshow(centre_psf, cmap="cubehelix")
+            plt.subplot(1, 3, 2)
+            plt.imshow(psf, cmap="cubehelix")
             plt.title("CENTRE PSF")
             plt.colorbar()
 
-            plt.subplot(1, 4, 3)
-            plt.imshow(centre_psf - centre_dirty, cmap="cubehelix")
+            plt.subplot(1, 3, 3)
+            plt.imshow(psf - dirty, cmap="cubehelix")
             plt.title("PSF - DIRTY")
-            plt.colorbar()
-
-            plt.subplot(1, 4, 4)
-            plt.imshow(psf, cmap="cubehelix")
-            plt.title("PSF")
             plt.colorbar()
 
             plt.show(True)
 
     # Must have some non-zero values
     assert np.any(dirty != 0.0)
-    assert np.any(centre_psf != 0.0)
+    assert np.any(psf != 0.0)
 
-    # Should be very much the same
-    assert np.allclose(centre_psf, centre_dirty, rtol=1e-64)
+    # Should be very much the same (LB - This tolerance might be a bit extreme)
+    assert np.allclose(psf, dirty, rtol=1e-64)
 
 
 def test_dask_degridder_gridder():
