@@ -1,20 +1,18 @@
 import numpy as np
 from numpy.testing import assert_array_almost_equal
 #import pytest
-from shapelets import shapelet as sl
+# from shapelets import shapelet as sl
 from scipy.special import factorial, hermite
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from africanus.model.shape import shapelet as nb_shapelet
+from africanus.model.shape import shapelet, basis_function
+from africanus.constants import c as lightspeed
 
 Fs = np.fft.fftshift
 iFs = np.fft.ifftshift
-
-def shapelet_img_space(xx, n, beta):
-    basis_component = ((2**n) * ((np.pi)**(0.5)) * factorial(n) * beta)**(-0.5)
-    exponential_component = hermite(n)(xx / beta) * np.exp((-0.5) * (xx**2) * (beta **(-2)))
-    return basis_component * exponential_component
+fft = lambda x:np.fft.fft2(x, norm='ortho')
+ifft = lambda x:np.fft.ifft2(x, norm='ortho')
 
 def test_image_space():
         # Define all respective values for nrow, ncoeff, etc
@@ -188,6 +186,87 @@ def test_image_space():
         #####################################################
         #####################################################
 
+def test_fourier_space_shapelets():
+    # set overall scale
+    beta_l = 1.0
+    beta_m = 1.0
+    # only taking the zeroth order with 
+    ncoeffs_l = 1
+    ncoeffs_m = 1
+    nsrc = 1
+    coeffs_l = np.ones((nsrc, ncoeffs_l), dtype=np.float64)
+    coeffs_m = np.ones((nsrc, ncoeffs_m), dtype=np.float64)  
+    # Define the range of lm values (these give 3 standard deviations for the 0th order shapelet in image space)
+    scale_fact = 10
+    l_min = -3 * np.sqrt(2) * beta_l * scale_fact
+    l_max = 3 * np.sqrt(2) * beta_l * scale_fact
+    m_min = -3 * np.sqrt(2) * beta_m * scale_fact
+    m_max = 3 * np.sqrt(2) * beta_m * scale_fact
+    # set number of pixels
+    npix = 257 
+    # create image space coordinate grid
+    delta_l = (l_max - l_min)/(npix-1)
+    delta_m = (m_max - m_min)/(npix-1)
+    lvals = l_min + np.arange(npix) * delta_l
+    mvals = m_min + np.arange(npix) * delta_m
+    assert lvals[-1] == l_max
+    assert mvals[-1] == m_max
+    # evaluate image space shapelet
+    img_space_shape = np.zeros((npix, npix), dtype=np.float64)
+    for i, l in enumerate(lvals):
+        for j, m in enumerate(mvals):
+            for nx in range(ncoeffs_l):
+                for ny in range(ncoeffs_m):
+                    img_space_shape[i, j] += coeffs_l[0, nx] * basis_function(nx, l, beta_l) \
+                                             * coeffs_m[0, ny] * basis_function(ny, m, beta_m)
+
+    # ll, mm = np.meshgrid(lvals, mvals)
+    # img_space_shape_test = np.exp(-ll**2/(2*beta_l**2))*np.exp(-mm**2/(2*beta_m**2))/(np.sqrt(np.sqrt(np.pi)*beta_l)*np.sqrt(np.sqrt(np.pi)*beta_m))
+
+    # next take FFT
+    fft_shapelet = Fs(fft(iFs(img_space_shape)))
+    print("FFT imag", np.abs(fft_shapelet.imag).max())
+    fft_shapelet_max = fft_shapelet.real.max()
+    fft_shapelet /= fft_shapelet_max
+
+    # get freq space coords
+    freq = Fs(np.fft.fftfreq(npix, d=delta_l))
+    uu, vv = np.meshgrid(freq, freq)
+    nrows = uu.size
+    assert nrows == npix**2
+    uv = np.hstack((uu.reshape(nrows, 1), vv.reshape(nrows, 1)))
+    uvw = np.zeros((nrows, 3), dtype=np.float64)
+    uvw[:, 0:2] = uv
+    nchan = 1
+    frequency = np.ones(nchan, dtype=np.float64) * lightspeed
+    beta = np.zeros((nsrc, 2), dtype=np.float64)
+    beta[0, 0] = beta_l
+    beta[0, 1] = beta_m
+
+    uv_space_shapelet = shapelet(uvw, frequency, coeffs_l, coeffs_m, beta).reshape(npix, npix)
+    print("uv imag = ", np.abs(uv_space_shapelet.imag).max())
+    uv_space_shapelet_max = uv_space_shapelet.real.max()
+    uv_space_shapelet /= uv_space_shapelet_max
+    # plt.figure('uv')
+    # plt.imshow(uv_space_shapelet.real)
+    # plt.colorbar()
+    # plt.figure('fft')
+    # plt.imshow(fft_shapelet.real)
+    # plt.colorbar()
+    # plt.figure('diff')
+    # plt.imshow(fft_shapelet.real - uv_space_shapelet.real)
+    # plt.colorbar()
+    # plt.show()
+    print(" npix ", 1.0/np.sqrt(2*np.pi), 1.0/(2*np.pi), 1.0/np.sqrt(2*np.pi)**3, 1.0/(2*np.pi)**2)
+    ratio = fft_shapelet_max/uv_space_shapelet_max
+    print(" Ratio = ", ratio, 1.0/ratio)
+    print(" Max diff = ", np.abs(fft_shapelet - uv_space_shapelet).max())
+
+
+
+
+
+    
 
 
 def _test_shapelet():
@@ -369,3 +448,5 @@ def _test_single_shapelet():
     fig.savefig("abs_vals_single_shapelet.png")
     plt.close()
     assert np.allclose(np.abs(gf_shapelets), np.abs(codex_shapelets))
+
+test_fourier_space_shapelets()

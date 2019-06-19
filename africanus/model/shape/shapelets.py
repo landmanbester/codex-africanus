@@ -33,40 +33,36 @@ def basis_function(n, xx, beta):
 
 
 #@numba.jit(nogil=True, nopython=True, cache=True)
-def shapelet(coords, frequency, coeffs, beta):
+def shapelet(coords, frequency, coeffs_l, coeffs_m, beta, dtype=np.complex128):
     """
     shapelet: computes the shapelet model image in Fourier space
     Inputs:
         coords: coordinates in (u,v) space with shape (nrow, 3)
         frequency: frequency values with shape (nchan,)
-        coeffs: shapelet coefficients with shape (nsrc, nmax1, nmax2)
+        coeffs_l: shapelet coefficients with shape (nsrc, ncoeffs_l)
+        coeffs_m: shapelet coefficients with shape (nsrc, ncoeffs_m)
         beta: characteristic shapelet size with shape (nsrc, 2)
     Returns:
         out_shapelets: Shapelet with shape (nsrc, nrow, nchan)
     """
-    
-    fwhmint = 1.0 / np.sqrt(np.log(256))
-    gauss_scale = fwhmint * np.sqrt(2.) * (np.pi / lightspeed)
     nrow, _ = coords.shape
-    nsrc, nmax1, nmax2 = coeffs.shape
-    nchan = coeffs.shape[0]
-    out_shapelets = np.empty((nsrc, nrow, nchan), dtype=np.complex128)
+    nsrc, nmax1 = coeffs_l.shape
+    nmax2 = coeffs_m.shape[1]
+    nchan = frequency.size
+    out_shapelets = np.empty((nrow, nchan, nsrc), dtype=dtype)
     for row in range(nrow):
         u, v, w = coords[row, :]
         for chan in range(nchan):
-            fu = u# * frequency[chan]# * gauss_scale
-            fv = v# * frequency[chan]# * gauss_scale
-            #print(fu, fv, frequency[chan])
-            #print(fu, fv)
+            fu = u * 2 * np.pi * frequency[chan]/lightspeed
+            fv = v * 2 * np.pi * frequency[chan]/lightspeed
             for src in range(nsrc):
                 beta_u, beta_v = beta[src, :] ** (-1)
-                tmp_shapelet = 0 + 0j
+                tmp_shapelet = np.zeros(1, dtype=dtype)
                 for n1 in range(nmax1):
                     for n2 in range(nmax2):
-                        tmp_shapelet += coeffs[src, n1, n2] * basis_function(n1, fu, beta_u) * basis_function(n2, fv, beta_v) if (n1 + n2 % 4) == 0\
-                            else -1 * coeffs[src, n1, n2] * basis_function(n1, fu, beta_u) * basis_function(n2, fv, beta_v) if (n1 + n2 % 4) == 2 \
-                            else 1j * coeffs[src, n1, n2] * basis_function(n1, fu, beta_u) * basis_function(n2, fv, beta_v)
-                        #print(tmp_shapelet)
-                #print("tmp_shapelet is %f" %tmp_shapelet)
-                out_shapelets[src, row, chan] = tmp_shapelet
+                        real_part = coeffs_l[src, n1] * basis_function(n1, fu, beta_u) \
+                                    * coeffs_m[src, n2] * basis_function(n2, fv, beta_v)
+                        complex_part = 1.0j**(n1 + n2)
+                        tmp_shapelet += complex_part * real_part
+                out_shapelets[row, chan, src] = tmp_shapelet
     return out_shapelets
