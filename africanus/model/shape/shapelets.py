@@ -26,10 +26,19 @@ def factorial(n):
     return ans * n
 
 #@numba.jit(nogil=True, nopython=True, cache=True)
-def basis_function(n, xx, beta):
-    basis_component = ((2**n) * ((np.pi)**(0.5)) * factorial(n) * beta)**(-0.5)
-    exponential_component = hermite(n, xx / beta) * np.exp((-0.5) * (xx**2) * (beta **(-2)))
-    return basis_component * exponential_component
+def basis_function(n, xx, beta, fourier=False, delta_x=None):
+    if fourier:
+        x = 2*np.pi*xx
+        scale = 1.0/beta
+    else:
+        x = xx
+        scale = beta
+    basis_component = 1.0/np.sqrt(2.0**n * np.sqrt(np.pi) * factorial(n) * scale)
+    exponential_component = hermite(n, x / scale) * np.exp(-x**2 / (2.0*scale**2))
+    if fourier:
+        return 1.0j**n * basis_component * exponential_component * np.sqrt(2*np.pi)/delta_x
+    else:
+        return basis_component * exponential_component
 
 
 #@numba.jit(nogil=True, nopython=True, cache=True)
@@ -66,3 +75,42 @@ def shapelet(coords, frequency, coeffs_l, coeffs_m, beta, dtype=np.complex128):
                         tmp_shapelet += complex_part * real_part
                 out_shapelets[row, chan, src] = tmp_shapelet
     return out_shapelets
+
+
+def shapelet_1d(u, coeffs, fourier, delta_x=None, beta=1.0):
+    """
+    The one dimensional shapelet. Default is to return the
+    dimensionless version. 
+
+    Parameters
+    ----------
+    u : :class:`numpy.ndarray`
+        Array of coordinates at which to evaluate the shapelet
+        of shape (nrow)
+    coeffs : :class:`numpy.ndarray`
+        Array of shapelet coefficients of chape (ncoeff)
+    fourier : bool
+        Whether to evaluate the shapelet in Fourier space
+        or in signal space
+    beta : float, optional
+        The scale parameter for the shapelet. If fourier is
+        true the scale is 1/beta
+
+    Returns
+    -------
+    out : :class:`numpy.ndarray`
+        The shapelet evaluated at u of shape (nrow)
+    """
+    nrow = u.size
+    if fourier:
+        if delta_x is None:
+            raise(ValueError, "You have to pass in a value for delta_x in Fourier mode")
+        out = np.zeros(nrow, dtype=np.complex128)
+    else:
+        out = np.zeros(nrow, dtype=np.float64)
+    for row, ui in enumerate(u):
+        for n, c in enumerate(coeffs):
+            out[row] += c * basis_function(n, ui, beta, fourier=fourier, delta_x=delta_x)
+    return out 
+
+        

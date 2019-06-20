@@ -6,13 +6,16 @@ from scipy.special import factorial, hermite
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-from africanus.model.shape import shapelet, basis_function
+from africanus.model.shape import shapelet, basis_function, shapelet_1d
 from africanus.constants import c as lightspeed
 
 Fs = np.fft.fftshift
 iFs = np.fft.ifftshift
-fft = lambda x:np.fft.fft2(x, norm='ortho')
-ifft = lambda x:np.fft.ifft2(x, norm='ortho')
+from scipy import fftpack
+fft = fftpack.fft
+ifft = fftpack.ifft  
+fft2 = fftpack.fft2
+ifft2 = fftpack.ifft2
 
 def test_image_space():
         # Define all respective values for nrow, ncoeff, etc
@@ -263,6 +266,41 @@ def test_fourier_space_shapelets():
     print(" Max diff = ", np.abs(fft_shapelet - uv_space_shapelet).max())
 
 
+def test_1d_shapelet():
+    # set signal space coords
+    beta = 1.0
+    npix = 513
+    coeffs = np.ones(1, dtype=np.float64)
+    l_min = -15.0 * beta
+    l_max = 15.0 * beta
+    delta_l = (l_max - l_min)/(npix-1)
+    if npix%2:
+        l = l_min + np.arange(npix) * delta_l
+    else:
+        l = l_min + np.arange(-0.5, npix-0.5) * delta_l
+    img_shape = shapelet_1d(l, coeffs, False, beta=beta)
+
+    # get Fourier space coords and take fft
+    u = Fs(np.fft.fftfreq(npix, d=delta_l))
+    fft_shape = Fs(fft(iFs(img_shape)))
+    fft_shape_max = fft_shape.real.max()
+    
+    # get uv space
+    uv_shape = shapelet_1d(u, coeffs, True, delta_x=delta_l, beta=beta)
+    uv_shape_max = uv_shape.real.max()
+
+    print('ratio = ', uv_shape_max/fft_shape_max)
+
+    plt.figure('uv')
+    plt.plot(uv_shape.real, 'k')
+
+    plt.figure('fft')
+    plt.plot(fft_shape.real, 'k')
+
+    plt.figure('diff')
+    plt.plot(uv_shape.real - fft_shape.real, 'k')
+
+    plt.show()
 
 
 
@@ -449,4 +487,6 @@ def _test_single_shapelet():
     plt.close()
     assert np.allclose(np.abs(gf_shapelets), np.abs(codex_shapelets))
 
-test_fourier_space_shapelets()
+# test_fourier_space_shapelets()
+
+test_1d_shapelet()
