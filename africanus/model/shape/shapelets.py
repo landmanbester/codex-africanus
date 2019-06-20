@@ -2,6 +2,7 @@ import numba
 import numpy as np
 from numpy import sqrt, exp
 from africanus.constants import c as lightspeed
+from africanus.constants import minus_two_pi_over_c
 
 e = 2.7182818284590452353602874713527
 square_root_of_pi = 1.77245385091
@@ -40,9 +41,16 @@ def basis_function(n, xx, beta, fourier=False, delta_x=None):
     else:
         return basis_component * exponential_component
 
+def phase_steer_and_w_correct(uvw, lm_source_center, frequency):
+    l0, m0 = lm_source_center
+    n0 = np.sqrt(1.0-l0**2-m0**2)
+    u, v, w = uvw
+    real_phase = minus_two_pi_over_c * frequency * (u*l0 + v*m0 + w*(n0-1))
+    return np.exp(1.0j*real_phase)
+
 
 #@numba.jit(nogil=True, nopython=True, cache=True)
-def shapelet(coords, frequency, coeffs_l, coeffs_m, beta, dtype=np.complex128):
+def shapelet(coords, frequency, coeffs_l, coeffs_m, beta, delta_l, delta_m, lm, dtype=np.complex128):
     """
     shapelet: computes the shapelet model image in Fourier space
     Inputs:
@@ -51,6 +59,9 @@ def shapelet(coords, frequency, coeffs_l, coeffs_m, beta, dtype=np.complex128):
         coeffs_l: shapelet coefficients with shape (nsrc, ncoeffs_l)
         coeffs_m: shapelet coefficients with shape (nsrc, ncoeffs_m)
         beta: characteristic shapelet size with shape (nsrc, 2)
+        delta_l: pixel size in l dim
+        delta_m: pixel size in m dim
+        lm:source center coordinates of shape (nsource, 2)
     Returns:
         out_shapelets: Shapelet with shape (nsrc, nrow, nchan)
     """
@@ -73,7 +84,9 @@ def shapelet(coords, frequency, coeffs_l, coeffs_m, beta, dtype=np.complex128):
                                     * coeffs_m[src, n2] * basis_function(n2, fv, beta_v)
                         complex_part = 1.0j**(n1 + n2)
                         tmp_shapelet += complex_part * real_part
-                out_shapelets[row, chan, src] = tmp_shapelet
+                l, m = lm[src]
+                wterm = phase_steer_and_w_correct((u,v,w), (l, m), frequency[chan])
+                out_shapelets[row, chan, src] = tmp_shapelet * wterm
     return out_shapelets
 
 
