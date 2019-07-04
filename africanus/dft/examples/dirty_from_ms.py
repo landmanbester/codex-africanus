@@ -77,7 +77,7 @@ xds = list(xds_from_ms(args.ms, columns=['UVW', args.colname, 'FLAG', 'WEIGHT'],
 vis = getattr(xds, args.colname).data
 uvw = xds.UVW.data
 flags = xds.FLAG.data
-weights = xds.WEIGHT.dat
+weights = xds.WEIGHT.data
 # Get MS frequencies
 spw_ds = list(xds_from_table("::".join((args.ms, "SPECTRAL_WINDOW")),
                              group_cols="__row__"))[0]
