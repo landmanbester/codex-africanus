@@ -132,20 +132,6 @@ StokesI = (mfs_dirty[0, 0] + mfs_dirty[0, 1])/2.0
 StokesV = (mfs_dirty[0, 0] - mfs_dirty[0, 1])/2.0
 
 
-import matplotlib.pyplot as plt
-plt.figure('psf')
-plt.imshow(psf[0, 0])
-plt.colorbar()
-plt.figure('I')
-plt.imshow(StokesI)
-plt.colorbar()
-plt.figure('V')
-plt.imshow(StokesV)
-plt.colorbar()
-plt.show()
-
-
-
 # load in fits file (mainly for the header)
 data = fits.getdata(args.fitsname)
 hdr = fits.getheader(args.fitsname)
