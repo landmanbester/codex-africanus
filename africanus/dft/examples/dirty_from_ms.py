@@ -121,19 +121,16 @@ dirty = np.transpose(dirty, (1, 2, 0)).reshape(use_chan, 2, args.nx, args.ny)
 
 # make the MFS image
 wsums = psf[:, 0, args.nx//2, args.ny//2]
+print("wsums = ", wsums)
 wsum = np.sum(wsums)
-w = wsums/wsum  # normalised weights
-# Get in Jy/beam units
-dirty /= wsums[:, None, None, None]
 # combine with weighted sum
-mfs_dirty = np.sum(dirty * w[:, None, None, None], axis=0, keepdims=True)
+mfs_dirty = np.sum(dirty, axis=0, keepdims=True)/wsum
 
 StokesI = (mfs_dirty[0, 0] + mfs_dirty[0, 1])/2.0
 StokesV = (mfs_dirty[0, 0] - mfs_dirty[0, 1])/2.0
 
 
 # load in fits file (mainly for the header)
-data = fits.getdata(args.fitsname)
 hdr = fits.getheader(args.fitsname)
 hdu = fits.PrimaryHDU(header=hdr)
 hdu.data = StokesI.T[::-1]
