@@ -27,8 +27,7 @@ def create_parser():
     p = argparse.ArgumentParser()
     p.add_argument("--ms", type=str)
     p.add_argument("--model_cols", default='MODEL_DATA', type=str)
-    p.add_argument("--data_col", default='DATA', type=str)
-    p.add_argument("--out_col", default='CORRECTED_DATA', type=str)
+    p.add_argument("--out_col", default='DATA', type=str)
     p.add_argument("--gain_file", type=str)
     p.add_argument("--utimes_per_chunk", default=32, type=int)
     p.add_argument("--ncpu", default=0, type=int)
@@ -64,7 +63,6 @@ n_dir = len(model_cols)
 cols = []
 cols.append('ANTENNA1')
 cols.append('ANTENNA2')
-cols.append(args.data_col)
 for col in model_cols:
     cols.append(col)
 
@@ -78,7 +76,6 @@ jones = da.from_array(jones, chunks=(args.utimes_per_chunk,)
 
 # load data in in chunks and apply gains to each chunk
 xds = xds_from_ms(args.ms, columns=cols, chunks={"row": row_chunks})[0]
-vis = getattr(xds, args.data_col).data
 ant1 = xds.ANTENNA1.data
 ant2 = xds.ANTENNA2.data
 
@@ -92,6 +89,9 @@ if model.shape[-1] > 2:
     n_row, n_chan, n_dir, n_corr = model.shape
     model = model.reshape(n_row, n_chan, n_dir, 2, 2)
     reshape_vis = True
+else:
+    n_row, n_chan, n_dir, n_corr = model.shape
+    reshape_vis = False
 
 # apply gains
 corrupted_data = corrupt_vis(tbin_idx, tbin_counts, ant1, ant2,

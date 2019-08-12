@@ -14,6 +14,8 @@ from africanus.calibration.phase_only.phase_only import (compute_jhj
                                                          as np_compute_jhj)
 from africanus.calibration.phase_only.phase_only import (compute_jhr
                                                          as np_compute_jhr)
+from africanus.calibration.phase_only.phase_only import (compute_jhr_new
+                                                         as np_compute_jhr_new)
 
 
 def test_compute_jhj_and_jhr(data_factory):
@@ -53,7 +55,6 @@ def test_compute_jhj_and_jhr(data_factory):
 
     assert_array_almost_equal(jhj1, jhj2, decimal=10)
     assert_array_almost_equal(jhr1, jhr2, decimal=10)
-
 
 def test_compute_jhj_dask(data_factory):
     da = pytest.importorskip("dask.array")

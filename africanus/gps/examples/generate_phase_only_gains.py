@@ -9,6 +9,7 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+np.random.seed(42)
 from pyrap.tables import table
 from africanus.gps.kernels import exponential_squared as cov_func
 from africanus.linalg import kronecker_tools as kt
@@ -21,6 +22,8 @@ def create_parser():
     p.add_argument("--ms", type=str)
     p.add_argument("--lsm", type=str)
     p.add_argument("--gain_file", type=str)
+    p.add_argument("--cov_file", type=str)
+    p.add_argument('--cal_mode', type=str, default='DIAG_DIAG')
     return p
 
 
@@ -63,17 +66,18 @@ K = np.array([time_cov, freq_cov, lm_cov], dtype=object)
 L = kt.kron_cholesky(K)
 
 # sample phases
-gains = np.zeros((n_time, n_ant, n_freq, n_dir, 2))
+n_corr = 1
+gains = np.zeros((n_time, n_ant, n_freq, n_dir, n_corr))
+print(gains.shape)
 for p in range(n_ant):
-    xi = np.random.randn(n_time * n_freq * n_dir)
-    samp = kt.kron_matvec(L, xi).reshape(n_time, n_freq, n_dir)
-    gains[:, p, :, :, 0] = samp
-    xi = np.random.randn(n_time * n_freq * n_dir)
-    samp = kt.kron_matvec(L, xi).reshape(n_time, n_freq, n_dir)
-    gains[:, p, :, :, 1] = samp
+    for c in range(n_corr):
+        xi = np.random.randn(n_time * n_freq * n_dir)
+        samp = kt.kron_matvec(L, xi).reshape(n_time, n_freq, n_dir)
+        gains[:, p, :, :, c] = samp
 
 # convert to gains
 gains = np.exp(1.0j*gains)
 
 # save result
 np.save(args.gain_file, gains)
+np.save(args.cov_file, K, allow_pickle=True)

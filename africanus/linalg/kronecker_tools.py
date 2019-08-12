@@ -67,3 +67,15 @@ def kron_cholesky(A):
         except Exception:  # add jitter
             L[i] = np.linalg.cholesky(A[i] + 1e-13*np.eye(A[i].shape[0]))
     return L
+
+def kron_transpose(A):
+    """
+    Transposes the elements of a kronecker matrix
+    :param A: an array of arrays holding matrices/vectors [A1, A2, ..., AD]
+    :return: an array of arrays holding matrices/vectors [A1.T, A2.T, ..., AD.T]
+    """
+    D = A.shape[0]
+    AT = np.empty((D), dtype=object)
+    for i in range(D):
+        AT[i] = A[i].T
+    return AT

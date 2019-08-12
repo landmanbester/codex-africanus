@@ -66,7 +66,7 @@ def subtract_model_factory(mode):
     return njit(nogil=True)(subtract_model)
 
 
-@generated_jit(nopython=True, nogil=True, cache=True)
+@generated_jit(nopython=True, nogil=True, cache=True, fastmath=True)
 def residual_vis(time_bin_indices, time_bin_counts, antenna1,
                  antenna2, jones, vis, flag, model):
 
@@ -91,10 +91,10 @@ def residual_vis(time_bin_indices, time_bin_counts, antenna1,
                 gp = jones[t, p]
                 gq = jones[t, q]
                 for nu in range(n_chan):
-                    if not np.any(flag[row, nu]):
-                        subtract_model(
-                            gp[nu], vis[row, nu], gq[nu],
-                            model[row, nu], residual[row, nu])
+                    if np.any(flag[row, nu]):
+                        continue
+                    subtract_model(gp[nu], vis[row, nu], gq[nu],
+                                   model[row, nu], residual[row, nu])
         return residual
 
     return _residual_vis_fn

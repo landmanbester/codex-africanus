@@ -64,7 +64,7 @@ def corrupt_vis(time_bin_indices, time_bin_counts, antenna1,
                      jones, jones_shape,
                      model, model_shape,
                      adjust_chunks={"row": antenna1.chunks[0]},
-                     new_axes={"corr2": 2},  # why?
+                     # new_axes={"corr2": model.shape[-1]},  # why?
                      dtype=model.dtype,
                      align_arrays=False)
 
@@ -103,7 +103,7 @@ def correct_vis(time_bin_indices, time_bin_counts, antenna1,
                      vis, out_shape,
                      flag, out_shape,
                      adjust_chunks={"row": antenna1.chunks[0]},
-                     new_axes={"corr2": 2},  # why?
+                     # new_axes={"corr2": 2},  # why?
                      dtype=vis.dtype,
                      align_arrays=False)
 
@@ -145,7 +145,7 @@ def residual_vis(time_bin_indices, time_bin_counts, antenna1,
                      flag, out_shape,
                      model, model_shape,
                      adjust_chunks={"row": antenna1.chunks[0]},
-                     new_axes={"corr2": 2},  # why?
+                     # new_axes={"corr2": 2},  # why?
                      dtype=vis.dtype,
                      align_arrays=False)
 

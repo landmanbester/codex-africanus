@@ -159,6 +159,55 @@ def compute_jhr(time_bin_indices, time_bin_counts, antenna1,
     return _compute_jhr_fn
 
 
+@generated_jit(nopython=True, nogil=True, cache=True, fastmath=True)
+def compute_gradient_and_energy(time_bin_indices, time_bin_counts, antenna1,
+                                antenna2, jones, vis, model, flag, return_grad=True):
+
+    mode = check_type(jones, vis)
+
+    jacobian = jacobian_factory(mode)
+    from africanus.calibration.utils.residual_vis import subtract_model_factory
+    subtract_model = subtract_model_factory(mode)
+
+    @wraps(compute_jhr)
+    def _compute_gradient_and_energy_fn(time_bin_indices, time_bin_counts, antenna1,
+                                        antenna2, jones, vis, model, flag, return_grad=True):
+        # for dask arrays we need to adjust the chunks to
+        # start counting from zero
+        time_bin_indices -= time_bin_indices.min()
+        jones_shape = np.shape(jones)
+        n_tim = jones_shape[0]
+        n_chan = jones_shape[2]
+        n_dir = jones_shape[3]
+
+        jhr = np.zeros(jones.shape, dtype=jones.dtype)
+        # tmp array the shape of jones_corr
+        jac = np.zeros_like(jones[0, 0, 0, 0], dtype=jones.dtype)
+        residual = np.zeros_like(vis[0, 0], vis.dtype)
+        energy = 0.0
+        for t in range(n_tim):
+            for row in range(time_bin_indices[t],
+                             time_bin_indices[t] + time_bin_counts[t]):
+                p = antenna1[row]
+                q = antenna2[row]
+                for nu in range(n_chan):
+                    if np.any(flag[row, nu]):
+                        continue
+                    gp = jones[t, p, nu]
+                    gq = jones[t, q, nu]
+                    subtract_model(gp, vis[row, nu], gq,
+                                   model[row, nu], residual)
+                    energy += residual.conj().T.dot(residual).real
+                    if return_grad:
+                        for s in range(n_dir):
+                            jacobian(gp[s], model[row, nu, s], gq[s], 1.0j, jac)
+                            jhr[t, p, nu, s] += jac.conjugate() * residual
+                            jacobian(gp[s], model[row, nu, s], gq[s], -1.0j, jac)
+                            jhr[t, q, nu, s] += jac.conjugate() * residual
+        return energy, jhr
+    return _compute_jhr_fn
+
+
 def phase_only_gauss_newton(time_bin_indices, time_bin_counts, antenna1,
                             antenna2, jones, vis, flag, model,
                             weight, tol=1e-4, maxiter=100):
