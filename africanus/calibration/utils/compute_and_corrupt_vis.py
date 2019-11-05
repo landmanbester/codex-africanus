@@ -17,7 +17,7 @@ def jones_mul_factory(mode):
                 l, m = lm[s]
                 n = np.sqrt(1 - l**2 - m**2)
                 real_phase = m2pioc * freq * (u*l + v*m + w*(n-1))
-                source_vis = model[s] * np.exp(1.0j*real_phase)/n
+                source_vis = model[s] * np.exp(1.0j*real_phase)
                 for c in range(out.shape[-1]):
                     out[c] += a1j[s, c]*source_vis[c]*np.conj(a2j[s, c])
     elif mode == DIAG:
@@ -28,7 +28,7 @@ def jones_mul_factory(mode):
                 l, m = lm[s]
                 n = np.sqrt(1 - l**2 - m**2)
                 real_phase = m2pioc * freq * (u*l + v*m + w*(n-1))
-                source_vis = model[s] * np.exp(1.0j*real_phase)/n
+                source_vis = model[s] * np.exp(1.0j*real_phase)
                 out[0, 0] += a1j[s, 0]*source_vis[0, 0] * np.conj(a2j[s, 0])
                 out[0, 1] += a1j[s, 0]*source_vis[0, 1] * np.conj(a2j[s, 1])
                 out[1, 0] += a1j[s, 1]*source_vis[1, 0] * np.conj(a2j[s, 0])
@@ -41,7 +41,7 @@ def jones_mul_factory(mode):
                 l, m = lm[s]
                 n = np.sqrt(1 - l**2 - m**2)
                 real_phase = m2pioc * freq * (u*l + v*m + w*(n-1))
-                source_vis = model[s] * np.exp(1.0j*real_phase)/n
+                source_vis = model[s] * np.exp(1.0j*real_phase)
                 # precompute resuable terms
                 t1 = a1j[s, 0, 0]*source_vis[0, 0]
                 t2 = a1j[s, 0, 1]*source_vis[1, 0]
