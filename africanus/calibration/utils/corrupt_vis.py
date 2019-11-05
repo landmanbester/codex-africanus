@@ -1,18 +1,10 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
-from functools import wraps
 from africanus.util.docs import DocstringTemplate
 from africanus.util.numba import generated_jit, njit
 from africanus.calibration.utils import check_type
-
-DIAG_DIAG = 0
-DIAG = 1
-FULL = 2
+from africanus.calibration.utils.utils import DIAG_DIAG, DIAG, FULL
 
 
 def jones_mul_factory(mode):
@@ -61,7 +53,7 @@ def jones_mul_factory(mode):
                     t3*tmp[1, 1] +\
                     t4*tmp[1, 1]
 
-    return njit(nogil=True)(jones_mul)
+    return njit(nogil=True, inline='always')(jones_mul)
 
 
 @generated_jit(nopython=True, nogil=True, cache=True)
@@ -71,7 +63,6 @@ def corrupt_vis(time_bin_indices, time_bin_counts, antenna1,
     mode = check_type(jones, model, vis_type='model')
     jones_mul = jones_mul_factory(mode)
 
-    @wraps(corrupt_vis)
     def _corrupt_vis_fn(time_bin_indices, time_bin_counts, antenna1,
                         antenna2, jones, model):
         # for dask arrays we need to adjust the chunks to

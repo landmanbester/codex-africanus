@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 # NOTE(sjperkins)
 # Non standard library imports should be avoided,
@@ -23,7 +20,7 @@ if not on_rtd:
         # astropy breaks with numpy 1.15.3
         # https://github.com/astropy/astropy/issues/7943
         'numpy >= 1.14.0, != 1.15.3',
-        'numba >= 0.43.0']
+        'numba >= 0.46.0']
 
 extras_require = {
     'cuda': ['cupy >= 5.0.0', 'jinja2 >= 2.10'],
@@ -33,7 +30,7 @@ extras_require = {
     'astropy': ['astropy >= 2.0.0, < 3.0; python_version <= "2.7"',
                 'astropy >= 3.0; python_version >= "3.0"'],
     'python-casacore': ['python-casacore == 3.0.0'],
-    'testing': ['pytest', 'pytest-runner', 'flaky']
+    'testing': ['pytest', 'flaky', 'pytest-flake8']
 }
 
 _non_cuda_extras = [er for n, er in extras_require.items() if n != "cuda"]

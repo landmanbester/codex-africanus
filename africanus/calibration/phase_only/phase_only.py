@@ -1,31 +1,24 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
-from functools import wraps
 from africanus.util.docs import DocstringTemplate
 from africanus.calibration.utils import residual_vis, check_type
 from africanus.util.numba import generated_jit, njit
-
-DIAG_DIAG = 0
-DIAG = 1
-FULL = 2
+from africanus.calibration.utils.utils import DIAG_DIAG, DIAG, FULL
 
 
 def jacobian_factory(mode):
     if mode == DIAG_DIAG:
         def jacobian(a1j, blj, a2j, sign, out):
-            out[...] = sign * a1j * blj * a2j.conjugate()
+            for c in range(out.shape[-1]):
+                out[c] = sign * a1j[c] * blj[c] * a2j[c].conjugate()
     elif mode == DIAG:
         def jacobian(a1j, blj, a2j, sign, out):
             out[...] = 0
     elif mode == FULL:
         def jacobian(a1j, blj, a2j, sign, out):
             out[...] = 0
-    return njit(nogil=True)(jacobian)
+    return njit(nogil=True, inline='always')(jacobian)
 
 
 @generated_jit(nopython=True, nogil=True, cache=True, fastmath=True)
@@ -38,7 +31,6 @@ def compute_jhj_and_jhr(time_bin_indices, time_bin_counts, antenna1,
 
     jacobian = jacobian_factory(mode)
 
-    @wraps(compute_jhj_and_jhr)
     def _jhj_and_jhr_fn(time_bin_indices, time_bin_counts, antenna1,
                         antenna2, jones, residual, model, flag):
         # for chunked dask arrays we need to adjust the chunks to
@@ -85,7 +77,6 @@ def compute_jhj(time_bin_indices, time_bin_counts, antenna1,
 
     jacobian = jacobian_factory(mode)
 
-    @wraps(compute_jhj)
     def _compute_jhj_fn(time_bin_indices, time_bin_counts, antenna1,
                         antenna2, jones, model, flag):
         # for dask arrays we need to adjust the chunks to
@@ -126,7 +117,6 @@ def compute_jhr(time_bin_indices, time_bin_counts, antenna1,
 
     jacobian = jacobian_factory(mode)
 
-    @wraps(compute_jhr)
     def _compute_jhr_fn(time_bin_indices, time_bin_counts, antenna1,
                         antenna2, jones, residual, model, flag):
         # for dask arrays we need to adjust the chunks to
@@ -208,7 +198,7 @@ def compute_gradient_and_energy(time_bin_indices, time_bin_counts, antenna1,
     return _compute_jhr_fn
 
 
-def phase_only_gauss_newton(time_bin_indices, time_bin_counts, antenna1,
+def gauss_newton(time_bin_indices, time_bin_counts, antenna1,
                             antenna2, jones, vis, flag, model,
                             weight, tol=1e-4, maxiter=100):
     # whiten data
@@ -222,6 +212,8 @@ def phase_only_gauss_newton(time_bin_indices, time_bin_counts, antenna1,
     if mode == DIAG_DIAG:
         jhj = compute_jhj(time_bin_indices, time_bin_counts,
                           antenna1, antenna2, jones, model, flag)
+    else:
+        raise NotImplementedError("Only DIAG_DIAG mode implemented")
 
     eps = 1.0
     k = 0
@@ -233,16 +225,9 @@ def phase_only_gauss_newton(time_bin_indices, time_bin_counts, antenna1,
         residual = residual_vis(time_bin_indices, time_bin_counts, antenna1,
                                 antenna2, jones, vis, flag, model)
 
-        # only need jhr in DIAG_DIAG mode
-        if mode == DIAG_DIAG:
-            jhr = compute_jhr(time_bin_indices, time_bin_counts,
-                              antenna1, antenna2,
-                              jones, residual, model, flag)
-        else:
-            raise NotImplementedError("Only DIAG_DIAG mode implemented")
-            # jhj, jhr = compute_jhj_and_jhr(time_bin_indices, time_bin_counts,
-            #                                antenna1, antenna2, jones,
-            #                                residual, model, flag)
+        jhr = compute_jhr(time_bin_indices, time_bin_counts,
+                          antenna1, antenna2,
+                          jones, residual, model, flag)
 
         # implement update
         phases_new = phases + 0.5 * (jhr/jhj).real
@@ -255,10 +240,10 @@ def phase_only_gauss_newton(time_bin_indices, time_bin_counts, antenna1,
     return jones, jhj, jhr, k
 
 
-PHASE_CALIBRATION_DOCS = DocstringTemplate("""
+GAUSS_NEWTON_DOCS = DocstringTemplate("""
 Performs phase-only maximum likelihood
-calibration assuming scalar or diagonal
-inputs using Gauss-Newton oprimisation.
+calibration using a Gauss-Newton optimisation
+algorithm. Currently only DIAG-DIAG mode is supported.
 
 Parameters
 ----------
@@ -288,7 +273,7 @@ weight : $(array_type)
     Weight spectrum of shape :code:`(row, chan, corr)`.
     If the channel axis is missing weights are duplicated
     for each channel.
-tol : float, optional
+tol: float, optional
     The tolerance of the solver. Defaults to 1e-4.
 maxiter: int, optional
     The maximum number of iterations. Defaults to 100.
@@ -306,24 +291,21 @@ jhr : $(array_type)
     Residuals projected into gain space
     of shape :code:`(time, ant, chan, dir, corr)`
     or shape :code:`(time, ant, chan, dir, corr, corr)`.
-k : int
+k: int
     Number of iterations (will equal maxiter if
     not converged)
 """)
 
 
 try:
-    phase_only_gauss_newton.__doc__ = PHASE_CALIBRATION_DOCS.substitute(
-                                    array_type=":class:`numpy.ndarray`")
+    gauss_newton.__doc__ = GAUSS_NEWTON_DOCS.substitute(
+                            array_type=":class:`numpy.ndarray`")
 except AttributeError:
     pass
 
 JHJ_AND_JHR_DOCS = DocstringTemplate("""
 Computes the diagonal of the Hessian and
-the residual projected in to gain space.
-These are the terms required to perform
-phase-only maximum likelihood calibration
-assuming scalar or diagonal inputs.
+the residual locally projected in to gain space.
 
 Parameters
 ----------

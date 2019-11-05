@@ -1,18 +1,11 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 from functools import wraps
 from africanus.util.docs import DocstringTemplate
 from africanus.util.numba import generated_jit, njit
 from africanus.calibration.utils import check_type
-
-DIAG_DIAG = 0
-DIAG = 1
-FULL = 2
+from africanus.calibration.utils.utils import DIAG_DIAG, DIAG, FULL
 
 
 def subtract_model_factory(mode):
@@ -101,8 +94,8 @@ def residual_vis(time_bin_indices, time_bin_counts, antenna1,
 
 
 RESIDUAL_VIS_DOCS = DocstringTemplate("""
-Computes residual visibilities in place
-given model visibilities and gains solutions.
+Computes residual visibilities given model
+visibilities and gains solutions.
 
 Parameters
 ----------

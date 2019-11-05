@@ -66,14 +66,14 @@ K = np.array([time_cov, freq_cov, lm_cov], dtype=object)
 L = kt.kron_cholesky(K)
 
 # sample phases
-n_corr = 1
-gains = np.zeros((n_time, n_ant, n_freq, n_dir, n_corr))
-print(gains.shape)
+gains = np.zeros((n_time, n_ant, n_freq, n_dir, 2))
 for p in range(n_ant):
-    for c in range(n_corr):
-        xi = np.random.randn(n_time * n_freq * n_dir)
-        samp = kt.kron_matvec(L, xi).reshape(n_time, n_freq, n_dir)
-        gains[:, p, :, :, c] = samp
+    xi = np.random.randn(n_time * n_freq * n_dir)
+    samp = kt.kron_matvec(L, xi).reshape(n_time, n_freq, n_dir)
+    gains[:, p, :, :, 0] = samp
+    xi = np.random.randn(n_time * n_freq * n_dir)
+    samp = kt.kron_matvec(L, xi).reshape(n_time, n_freq, n_dir)
+    gains[:, p, :, :, 1] = samp
 
 # convert to gains
 gains = np.exp(1.0j*gains)
