@@ -55,6 +55,47 @@ def im_to_vis(image, uvw, lm, frequency, dtype=None):
 
 
 @generated_jit(nopython=True, nogil=True, cache=True)
+def im_to_source_vis(image, uvw, lm, frequency, dtype=None):
+    # Infer complex output dtype if none provided
+    if is_numba_type_none(dtype):
+        out_dtype = np.result_type(np.complex64,
+                                   *(np.dtype(a.dtype.name) for a in
+                                     (image, uvw, lm, frequency)))
+    else:
+        out_dtype = dtype.dtype
+
+    def _im_to_source_vis_impl(image, uvw, lm, frequency, dtype=None):
+        nrows = uvw.shape[0]
+        nsrc = lm.shape[0]
+        nchan = frequency.shape[0]
+        ncorr = image.shape[-1]
+        vis_of_sources = np.zeros((nrows, nchan, nsrc, ncorr), dtype=out_dtype)
+
+        # For each uvw coordinate
+        for r in range(nrows):
+            u, v, w = uvw[r]
+            
+            # for each frequency
+            for nu in range(nchan):
+
+                # For each source
+                for s in range(nsrc):
+                    l, m = lm[s]
+                    n = np.sqrt(1.0 - l**2 - m**2) - 1.0
+
+                    # e^(-2*pi*(l*u + m*v + n*w)/c)
+                    real_phase = minus_two_pi_over_c * (l * u + m * v + n * w)
+                    p = real_phase * frequency[nu] * 1.0j
+
+                    # for each corr
+                    for c in range(ncorr):
+                        vis_of_sources[r, nu, s, c] = np.exp(p)*image[nu, s, c]
+
+        return vis_of_sources
+
+    return _im_to_source_vis_impl
+
+@generated_jit(nopython=True, nogil=True, cache=True)
 def vis_to_im(vis, uvw, lm, frequency, flags, dtype=None):
     # Infer output dtype if none provided
     if is_numba_type_none(dtype):
