@@ -30,9 +30,6 @@ def create_parser():
     p = argparse.ArgumentParser()
     p.add_argument("--ms", help="Name of measurement set", type=str)
     p.add_argument("--sky_model", type=str, help="Tigger lsm file")
-    p.add_argument("--out_col", help="Where to write the corrupted data to. "
-                   "Must exist in MS before writing to it.",
-                   default='DATA', type=str)
     p.add_argument("--utimes_per_chunk",  default=30, type=int,
                    help="Number of unique times in each chunk.")
     p.add_argument("--ncpu", help="The number of threads to use. "
@@ -273,7 +270,7 @@ def simulate(args):
         xds = xds.assign(**{source_names[d]: (("row", "chan", "corr"), model_vis[:, :, d, :, :].reshape(n_row, n_freq, n_corr))})
         out_names += [source_names[d]]
 
-    # Assign visibilities to args.out_col and write to ms
+    # Assign noise free visibilities to 'CLEAN_DATA'
     xds = xds.assign(**{'CLEAN_DATA': (("row", "chan", "corr"), data)})
     out_names += ['CLEAN_DATA']
 
@@ -327,7 +324,7 @@ def calibrate(args, jones, alphas):
     ant2 = ms.getcol('ANTENNA2')
     n_ant = np.maximum(ant1.max(), ant2.max()) + 1
     uvw = ms.getcol('UVW').astype(np.float64)
-    data = ms.getcol(args.out_col)  # this is where we put the data
+    data = ms.getcol('DATA')  # this is where we put the data
     # we know it is pure Stokes I so we can solve using diagonals only
     data = data[:, :, (0, 3)].astype(np.complex128)
     n_row, n_freq, n_corr = data.shape
