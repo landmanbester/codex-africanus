@@ -10,9 +10,8 @@ from africanus.calibration.utils.utils import DIAG_DIAG, DIAG, FULL
 def jacobian_factory(mode):
     if mode == DIAG_DIAG:
         def jacobian(a1j, blj, a2j, sign, out):
-            out[...] = sign * a1j * blj * a2j.conjugate()
-            # for c in range(out.shape[-1]):
-            #     out[c] = sign * a1j[c] * blj[c] * a2j[c].conjugate()
+            for c in range(out.shape[-1]):
+                out[c] = sign * a1j[c] * blj[c] * a2j[c].conjugate()
     elif mode == DIAG:
         def jacobian(a1j, blj, a2j, sign, out):
             out[...] = 0
@@ -87,10 +86,9 @@ def compute_jhj(time_bin_indices, time_bin_counts, antenna1,
         n_tim = jones_shape[0]
         n_chan = jones_shape[2]
         n_dir = jones_shape[3]
+        n_corr = jones.shape[-1]
 
         jhj = np.zeros(jones.shape, dtype=jones.real.dtype)
-        # tmp array the shape of jones_corr
-        jac = np.zeros_like(jones[0, 0, 0, 0], dtype=jones.dtype)
         for t in range(n_tim):
             for row in range(time_bin_indices[t],
                              time_bin_indices[t] + time_bin_counts[t]):
@@ -99,13 +97,12 @@ def compute_jhj(time_bin_indices, time_bin_counts, antenna1,
                 for nu in range(n_chan):
                     if np.any(flag[row, nu]):
                         continue
-                    gp = jones[t, p, nu]
-                    gq = jones[t, q, nu]
                     for s in range(n_dir):
-                        jacobian(gp[s], model[row, nu, s], gq[s], 1.0j, jac)
-                        jhj[t, p, nu, s] += (jac.conjugate() * jac).real
-                        jacobian(gp[s], model[row, nu, s], gq[s], -1.0j, jac)
-                        jhj[t, q, nu, s] += (jac.conjugate() * jac).real
+                        for c in range(n_corr):
+                            tmp = 1.0j * jones[t, p, nu, s, c] * model[row, nu, s, c] * jones[t, q, nu, s, c].conjugate()
+                            jhj[t, p, nu, s, c] += (tmp.conjugate() * tmp).real
+                            tmp *= -1.0
+                            jhj[t, q, nu, s, c] += (tmp.conjugate() * tmp).real
         return jhj
     return _compute_jhj_fn
 
@@ -127,10 +124,9 @@ def compute_jhr(time_bin_indices, time_bin_counts, antenna1,
         n_tim = jones_shape[0]
         n_chan = jones_shape[2]
         n_dir = jones_shape[3]
+        n_corr = jones_shape[-1]
 
         jhr = np.zeros(jones.shape, dtype=jones.dtype)
-        # tmp array the shape of jones_corr
-        jac = np.zeros_like(jones[0, 0, 0, 0], dtype=jones.dtype)
         for t in range(n_tim):
             for row in range(time_bin_indices[t],
                              time_bin_indices[t] + time_bin_counts[t]):
@@ -139,20 +135,17 @@ def compute_jhr(time_bin_indices, time_bin_counts, antenna1,
                 for nu in range(n_chan):
                     if np.any(flag[row, nu]):
                         continue
-                    gp = jones[t, p, nu]
-                    gq = jones[t, q, nu]
                     for s in range(n_dir):
-                        jacobian(gp[s], model[row, nu, s], gq[s], 1.0j, jac)
-                        jhr[t, p, nu, s] += jac.conjugate() * residual[row, nu]
-                        jacobian(gp[s], model[row, nu, s], gq[s], -1.0j, jac)
-                        jhr[t, q, nu, s] += jac.conjugate() * residual[row, nu]
+                        for c in range(n_corr):
+                            tmp = 1.0j * jones[t, p, nu, s, c] * model[row, nu, s, c] * jones[t, q, nu, s, c].conjugate()
+                            jhr[t, p, nu, s, c] += tmp.conjugate() * residual[row, nu, c]
+                            tmp *= -1.0
+                            jhr[t, q, nu, s, c] += tmp.conjugate() * residual[row, nu, c]
         return jhr
     return _compute_jhr_fn
 
 # LB - TODO somehow this generated_jit causes tests to fail
 # @generated_jit(nopython=True, nogil=True, cache=True, fastmath=True)
-
-
 def gauss_newton(time_bin_indices, time_bin_counts, antenna1,
                  antenna2, jones, vis, flag, model,
                  weight, tol=1e-4, maxiter=100):

@@ -323,7 +323,6 @@ def calibrate(args, jones, alphas):
     ant1 = ms.getcol('ANTENNA1')
     ant2 = ms.getcol('ANTENNA2')
     n_ant = np.maximum(ant1.max(), ant2.max()) + 1
-    uvw = ms.getcol('UVW').astype(np.float64)
     data = ms.getcol('DATA')  # this is where we put the data
     # we know it is pure Stokes I so we can solve using diagonals only
     data = data[:, :, (0, 3)].astype(np.complex128)
@@ -350,7 +349,7 @@ def calibrate(args, jones, alphas):
     ti = timeit()
     jones_hat, jhj, jhr, k = gauss_newton(
         tbin_idx, tbin_counts, ant1, ant2, jones0, data, flag, model,
-        weight, tol=1e-5, maxiter=100)
+        weight, tol=1e-4, maxiter=500)
     print("%i iterations took %fs" % (k, timeit() - ti))
 
     # verify result
@@ -379,4 +378,4 @@ if __name__ == "__main__":
 
     jones, alphas = simulate(args)
 
-    # calibrate(args, jones, alphas)
+    calibrate(args, jones, alphas)
