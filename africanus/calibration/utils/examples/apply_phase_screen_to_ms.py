@@ -267,37 +267,37 @@ def simulate(args):
     # assign model visibilities
     out_names = []
     for d in range(n_dir):
-        xds = xds.assign(**{source_names[d]: (("row", "chan", "corr"), model_vis[:, :, d, :, :].reshape(n_row, n_freq, n_corr))})
+        xds = xds.assign(**{source_names[d]: (("row", "chan", "corr"), model_vis[:, :, d, :, :].reshape(n_row, n_freq, n_corr).astype(np.complex64))})
         out_names += [source_names[d]]
 
     # Assign noise free visibilities to 'CLEAN_DATA'
-    xds = xds.assign(**{'CLEAN_DATA': (("row", "chan", "corr"), data)})
+    xds = xds.assign(**{'CLEAN_DATA': (("row", "chan", "corr"), data.astype(np.complex64))})
     out_names += ['CLEAN_DATA']
 
     # get noise realisation
     if args.sigma > 0.0:
         noise = (da.random.normal(loc=0.0, scale=args.sigma, size=(n_row, n_freq, n_corr), chunks=(row_chunks, n_freq, n_corr)) + 1.0j*
                  da.random.normal(loc=0.0, scale=args.sigma, size=(n_row, n_freq, n_corr), chunks=(row_chunks, n_freq, n_corr))) /np.sqrt(2.0)
-        xds = xds.assign(**{'NOISE': (("row", "chan", "corr"), noise)})
+        xds = xds.assign(**{'NOISE': (("row", "chan", "corr"), noise.astype(np.complex64))})
         out_names += ['NOISE']
         noisy_data = data + noise
-        xds = xds.assign(**{'DATA': (("row", "chan", "corr"), noisy_data)})
+        xds = xds.assign(**{'DATA': (("row", "chan", "corr"), noisy_data.astype(np.complex64))})
         out_names += ['DATA']
 
     # add in unmodelled flux
     if args.unmodelled_flux_frac > 0.0:
         # save vis of unmodelled flux
-        xds = xds.assign(**{'RESIDUAL': (("row", "chan", "corr"), unmodelled_vis)})
+        xds = xds.assign(**{'RESIDUAL': (("row", "chan", "corr"), unmodelled_vis.astype(np.complex64))})
         out_names += ['RESIDUAL']
         data_full = data + unmodelled_vis
-        xds = xds.assign(**{'DATA_FULL': (("row", "chan", "corr"), data_full)})
+        xds = xds.assign(**{'DATA_FULL': (("row", "chan", "corr"), data_full.astype(np.complex64))})
         out_names += ['DATA_FULL']
         if args.sigma > 0.0:
             noisy_data_full = data_full + noise
-            xds = xds.assign(**{'NOISY_DATA_FULL': (("row", "chan", "corr"), noisy_data_full)})
+            xds = xds.assign(**{'NOISY_DATA_FULL': (("row", "chan", "corr"), noisy_data_full.astype(np.complex64))})
             out_names += ['NOISY_DATA_FULL']
             noisy_residual = unmodelled_vis + noise
-            xds = xds.assign(**{'NOISY_RESIDUAL': (("row", "chan", "corr"), noisy_residual)})
+            xds = xds.assign(**{'NOISY_RESIDUAL': (("row", "chan", "corr"), noisy_residual.astype(np.complex64))})
             out_names += ['NOISY_RESIDUAL']
         
         
@@ -331,44 +331,13 @@ def calibrate(args, jones, alphas):
     flag = ms.getcol('FLAG')
     flag = flag[:, :, (0, 3)]
 
-    # get phase dir
-    radec0 = table(
-        args.ms+'::FIELD').getcol('PHASE_DIR').squeeze().astype(np.float64)
-
-    # get freqs
-    freq = table(
-        args.ms+'::SPECTRAL_WINDOW').getcol('CHAN_FREQ')[0].astype(np.float64)
-    assert freq.size == n_freq
-
-    # now get the model
-    # get source coordinates from lsm
+    # build source model from lsm
     lsm = Tigger.load(args.sky_model)
-    radec = []
-    stokes = []
-    spi = []
-    ref_freqs = []
-
-    for source in lsm.sources:
-        radec.append([source.pos.ra, source.pos.dec])
-        stokes.append([source.flux.I])
-        tmp_spec = source.spectrum
-        spi.append([tmp_spec.spi if tmp_spec is not None else 0.0])
-        ref_freqs.append([tmp_spec.freq0 if tmp_spec is not None else 1.0])
-
-    n_dir = len(stokes)
-    radec = np.asarray(radec)
-    lm = radec_to_lm(radec, radec0)
-
-    # get model visibilities
-    model = np.zeros((n_row, n_freq, n_dir, 2), dtype=np.complex)
-    stokes = np.asarray(stokes)
-    ref_freqs = np.asarray(ref_freqs)
-    spi = np.asarray(spi)
-    for d in range(n_dir):
-        Stokes_I = stokes[d] * (freq/ref_freqs[d])**spi[d]
-        model[:, :, d, 0:1] = im_to_vis(
-            Stokes_I[None, :, None], uvw, lm[d:d+1], freq)
-        model[:, :, d, 1] = model[:, :, d, 0]
+    n_dir = len(lsm.sources)
+    model = np.zeros((n_row, n_freq, n_dir, 2), dtype=np.complex128)
+    for d, source in enumerate(lsm.sources):
+        # extract name
+        model[:, :, d, :] = ms.getcol(source.name)[:, :, (0,3)]
 
     # set weights to unity
     weight = np.ones_like(data, dtype=np.float64)
