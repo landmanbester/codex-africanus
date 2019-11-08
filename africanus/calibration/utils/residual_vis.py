@@ -11,10 +11,11 @@ from africanus.calibration.utils.utils import DIAG_DIAG, DIAG, FULL
 def subtract_model_factory(mode):
     if mode == DIAG_DIAG:
         def subtract_model(a1j, blj, a2j, model, out):
-            n_dir = np.shape(model)[0]
+            n_dir, n_corr = model.shape
             out[...] = blj
             for s in range(n_dir):
-                out -= a1j[s]*model[s]*np.conj(a2j[s])
+                for c in range(n_corr):
+                    out[c] -= a1j[s, c]*model[s, c]*a2j[s, c].conjugate()
     elif mode == DIAG:
         def subtract_model(a1j, blj, a2j, model, out):
             n_dir = np.shape(model)[0]
@@ -86,7 +87,7 @@ def residual_vis(time_bin_indices, time_bin_counts, antenna1,
                 for nu in range(n_chan):
                     if not np.any(flag[row, nu]):
                         subtract_model(
-                            gp[nu], vis[row, nu], gq[nu],
+                            jones[t, p, nu], vis[row, nu], jones[t, q, nu],
                             model[row, nu], residual[row, nu])
         return residual
 

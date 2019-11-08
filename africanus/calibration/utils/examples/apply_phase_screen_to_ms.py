@@ -19,11 +19,13 @@ from africanus.dft.dask import im_to_source_vis
 from africanus.calibration.phase_only import gauss_newton
 from africanus.calibration.utils import chunkify_rows
 from africanus.calibration.utils.dask import corrupt_vis
+from africanus.calibration.utils import residual_vis
 import numpy as np
 import matplotlib as mpl
 mpl.use('TkAgg')
 import matplotlib.pyplot as plt
 from africanus.model.coherency.dask import convert
+import nifty_gridder as ng
 
 
 def create_parser():
@@ -101,7 +103,7 @@ def make_diffuse(freq, uvw, args, model_flux):
     n_freq = freq.size
     unmodelled_vis = np.zeros((n_row, n_freq, 4), dtype=np.complex128)
     dirty = np.zeros((n_freq, npix, npix), dtype=np.float64)
-    import nifty_gridder as ng
+    
     for v in range(n_freq):
         tmp_vis = ng.dirty2ms(uvw=uvw, freq=freq[v:v+1], dirty=unmodelled_source[v], pixsize_x=cell,
                               pixsize_y=cell, epsilon=1e-7, do_wstacking=True, nthreads=args.ncpu)
@@ -323,7 +325,8 @@ def calibrate(args, jones, alphas):
     ant1 = ms.getcol('ANTENNA1')
     ant2 = ms.getcol('ANTENNA2')
     n_ant = np.maximum(ant1.max(), ant2.max()) + 1
-    data = ms.getcol('DATA')  # this is where we put the data
+    data = ms.getcol('DATA_FULL')  # this is where we put the data
+    uvw = ms.getcol('UVW')
     # we know it is pure Stokes I so we can solve using diagonals only
     data = data[:, :, (0, 3)].astype(np.complex128)
     n_row, n_freq, n_corr = data.shape
@@ -337,6 +340,11 @@ def calibrate(args, jones, alphas):
     for d, source in enumerate(lsm.sources):
         # extract name
         model[:, :, d, :] = ms.getcol(source.name)[:, :, (0,3)]
+
+    ms.close()
+    
+    freq = table(args.ms+'::SPECTRAL_WINDOW').getcol('CHAN_FREQ')[0].astype(np.float64)
+    assert freq.size == n_freq
 
     # set weights to unity
     weight = np.ones_like(data, dtype=np.float64)
@@ -352,15 +360,45 @@ def calibrate(args, jones, alphas):
         weight, tol=1e-4, maxiter=500)
     print("%i iterations took %fs" % (k, timeit() - ti))
 
-    # verify result
-    for p in range(2):
-        for q in range(p):
-            diff_true = np.angle(jones[:, p] * jones[:, q].conj())
-            diff_hat = np.angle(jones_hat[:, p] * jones_hat[:, q].conj())
-            try:
-                assert_array_almost_equal(diff_true, diff_hat, decimal=2)
-            except Exception as e:
-                print(e)
+    # # verify result
+    # for p in range(2):
+    #     for q in range(p):
+    #         diff_true = np.angle(jones[:, p] * jones[:, q].conj())
+    #         diff_hat = np.angle(jones_hat[:, p] * jones_hat[:, q].conj())
+    #         try:
+    #             assert_array_almost_equal(diff_true, diff_hat, decimal=2)
+    #         except Exception as e:
+    #             print(e)
+    
+    # subtract sources
+    residual = residual_vis(tbin_idx, tbin_counts, ant1, ant2, jones_hat,
+                             data, flag, model)
+    
+    # get Stokes I vis
+    residual = (residual[:, :, 0] + residual[:, :, -1])/2.0
+
+    # get cell size (should match from above) LB - TODO: use reference image
+    uv_max = np.abs(uvw[:, 0:2]).max()
+    cell = 0.5/(2*uv_max)  # oversample at twice the Nyquist rate
+    npix = int(args.fov/cell)
+    if npix%2:
+        npix += 1
+    x = np.linspace(-args.fov/2.0, args.fov/2.0, npix)
+    cell = x[1] - x[0]
+
+    # image residual
+    dirty = np.zeros((n_freq, npix, npix), dtype=np.float64)
+    for v in range(n_freq):
+        dirty[v] = ng.ms2dirty(uvw=uvw, freq=freq[v:v+1], ms=residual[:, v:v+1], npix_x=npix, npix_y=npix,
+                               pixsize_x=cell, pixsize_y=cell, epsilon=1e-7, do_wstacking=True,
+                               nthreads=args.ncpu)
+        plt.figure(v)
+        plt.imshow(dirty[v])
+        plt.colorbar()
+    plt.show()
+
+    np.save('residual_image.npy', dirty)
+
 
 
 if __name__ == "__main__":
