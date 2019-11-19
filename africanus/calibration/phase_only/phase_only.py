@@ -99,10 +99,14 @@ def compute_jhj(time_bin_indices, time_bin_counts, antenna1,
                         continue
                     for s in range(n_dir):
                         for c in range(n_corr):
-                            tmp = 1.0j * jones[t, p, nu, s, c] * model[row, nu, s, c] * jones[t, q, nu, s, c].conjugate()
-                            jhj[t, p, nu, s, c] += (tmp.conjugate() * tmp).real
+                            tmp = (1.0j *
+                                   jones[t, p, nu, s, c] * 
+                                   model[row, nu, s, c] *
+                                   jones[t, q, nu, s, c].conjugate())
+
+                            jhj[t, p, nu, s, c] += (np.conj(tmp) * tmp).real
                             tmp *= -1.0
-                            jhj[t, q, nu, s, c] += (tmp.conjugate() * tmp).real
+                            jhj[t, q, nu, s, c] += (np.conj(tmp) * tmp).real
         return jhj
     return _compute_jhj_fn
 
@@ -137,10 +141,15 @@ def compute_jhr(time_bin_indices, time_bin_counts, antenna1,
                         continue
                     for s in range(n_dir):
                         for c in range(n_corr):
-                            tmp = 1.0j * jones[t, p, nu, s, c] * model[row, nu, s, c] * jones[t, q, nu, s, c].conjugate()
-                            jhr[t, p, nu, s, c] += tmp.conjugate() * residual[row, nu, c]
+                            tmp = (1.0j *
+                                   jones[t, p, nu, s, c] *
+                                   model[row, nu, s, c] *
+                                   jones[t, q, nu, s, c].conjugate())
+                            jhr[t, p, nu, s, c] += (np.conj(tmp) *
+                                                    residual[row, nu, c])
                             tmp *= -1.0
-                            jhr[t, q, nu, s, c] += tmp.conjugate() * residual[row, nu, c]
+                            jhr[t, q, nu, s, c] += (np.conj(tmp) *
+                                                    residual[row, nu, c])
         return jhr
     return _compute_jhr_fn
 
