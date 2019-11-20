@@ -26,6 +26,7 @@ mpl.use('TkAgg')
 import matplotlib.pyplot as plt
 from africanus.model.coherency.dask import convert
 import nifty_gridder as ng
+from astropy.io import fits
 
 
 def create_parser():
@@ -50,7 +51,28 @@ def create_parser():
                    help="Unmodelled flux as a fraction of the total in the sky model")
     p.add_argument("--unmodelled_freq_range", default=None, nargs='+', type=int,
                    help="Start and end channel that unmodelled source occupies")
+    p.add_argument("--ref_image", type=str, default=None, help="Reference image to pinch header from")
     return p
+
+def load_params_from_fits(args):
+    hdr = fits.getheader(args.ref_image)
+    if hdr['CUNIT1'].lower() != "deg":
+        raise ValueError("Image units must be in degrees")
+    npix_l = hdr['NAXIS1']
+    refpix_l = hdr['CRPIX1']
+    delta_l = hdr['CDELT1'] * np.pi/180  # convert to radians
+    l_coord = np.arange(1 - refpix_l, 1 + npix_l - refpix_l)*delta_l
+
+    if hdr['CUNIT2'].lower() != "deg":
+        raise ValueError("Image units must be in degrees")
+    npix_m = hdr['NAXIS2']
+    refpix_m = hdr['CRPIX2']
+    delta_m = hdr['CDELT2'] * np.pi/180  # convert to radians
+    m_coord = np.arange(1 - refpix_m, 1 + npix_m - refpix_m)*delta_m
+
+    print("Image shape = ", (npix_l, npix_m))
+
+    return npix_l, npix_m, np.abs(delta_l), np.abs(delta_m), l_coord, m_coord
 
 def busy_simple(w, a, b, c, xi):
     """
@@ -80,16 +102,12 @@ def make_diffuse(freq, uvw, args, model_flux):
     freq_profile = busy_simple(w, 1.0, 100, 50*w, xi)
 
     # set up Gaussian blob
-    uv_max = np.abs(uvw[:, 0:2]).max()
-    cell = 0.5/(2*uv_max)  # oversample at twice the Nyquist rate
-    npix = int(args.fov/cell)
-    if npix%2:
-        npix += 1
-    x = np.linspace(-args.fov/2.0, args.fov/2.0, npix)
-    cell = x[1] - x[0]
-    # assert x[-1] == args.fov/2.0
-    ll, mm = np.meshgrid(x, x)
-    fwhm = args.unmodelled_size * args.fov
+    nx, ny, delx, dely, l, m = load_params_from_fits(args)
+    ll, mm = np.meshgrid(l, m)
+    fov = np.maximum(l.max() - l.min(), m.max() - m.min())
+    if args.unmodelled_size > 0.5:
+        print("You probably want to use a smaller unmodelled_size")
+    fwhm = args.unmodelled_size * fov
     sigma = fwhm/(2*np.sqrt(2*np.log(2)))
     unmodelled_source = np.exp(-(ll**2 + mm**2)/(2*sigma**2))
     unmodelled_flux = np.sum(unmodelled_source)
@@ -98,19 +116,31 @@ def make_diffuse(freq, uvw, args, model_flux):
     # scale by frequency profile
     unmodelled_source = freq_profile[:, None, None] * unmodelled_source[None, :, :]
 
+    # for v in range(freq.size):
+    #     plt.figure(str(v))
+    #     plt.imshow(unmodelled_source[v])
+    #     plt.colorbar()
+    # plt.show()
+    
+
     # get corresponding visibilities
     n_row = uvw.shape[0]
     n_freq = freq.size
     unmodelled_vis = np.zeros((n_row, n_freq, 4), dtype=np.complex128)
-    dirty = np.zeros((n_freq, npix, npix), dtype=np.float64)
+    dirty = np.zeros((n_freq, nx, ny), dtype=np.float64)
     
     for v in range(n_freq):
-        tmp_vis = ng.dirty2ms(uvw=uvw, freq=freq[v:v+1], dirty=unmodelled_source[v], pixsize_x=cell,
-                              pixsize_y=cell, epsilon=1e-7, do_wstacking=True, nthreads=args.ncpu)
+        tmp_vis = ng.dirty2ms(uvw=uvw, freq=freq[v:v+1], dirty=unmodelled_source[v], pixsize_x=delx,
+                              pixsize_y=dely, epsilon=1e-7, do_wstacking=True, nthreads=args.ncpu)
         unmodelled_vis[:, v:v+1, 0] = unmodelled_vis[:, v:v+1, -1] = tmp_vis
-        dirty[v] = ng.ms2dirty(uvw=uvw, freq=freq[v:v+1], ms=tmp_vis, npix_x=npix, npix_y=npix,
-                                   pixsize_x=cell, pixsize_y=cell, epsilon=1e-7, do_wstacking=True,
+        dirty[v] = ng.ms2dirty(uvw=uvw, freq=freq[v:v+1], ms=tmp_vis, npix_x=nx, npix_y=ny,
+                                   pixsize_x=delx, pixsize_y=dely, epsilon=1e-7, do_wstacking=True,
                                    nthreads=args.ncpu)
+    #     plt.figure(str(v))
+    #     plt.imshow(dirty[v])
+    #     plt.colorbar()
+    # plt.show()
+    # quit()
     return unmodelled_source, unmodelled_vis, dirty
 
 
@@ -378,19 +408,13 @@ def calibrate(args, jones, alphas):
     residual = (residual[:, :, 0] + residual[:, :, -1])/2.0
 
     # get cell size (should match from above) LB - TODO: use reference image
-    uv_max = np.abs(uvw[:, 0:2]).max()
-    cell = 0.5/(2*uv_max)  # oversample at twice the Nyquist rate
-    npix = int(args.fov/cell)
-    if npix%2:
-        npix += 1
-    x = np.linspace(-args.fov/2.0, args.fov/2.0, npix)
-    cell = x[1] - x[0]
+    nx, ny, delx, dely, l, m = load_params_from_fits(args)
 
     # image residual
-    dirty = np.zeros((n_freq, npix, npix), dtype=np.float64)
+    dirty = np.zeros((n_freq, nx, ny), dtype=np.float64)
     for v in range(n_freq):
-        dirty[v] = ng.ms2dirty(uvw=uvw, freq=freq[v:v+1], ms=residual[:, v:v+1], npix_x=npix, npix_y=npix,
-                               pixsize_x=cell, pixsize_y=cell, epsilon=1e-7, do_wstacking=True,
+        dirty[v] = ng.ms2dirty(uvw=uvw, freq=freq[v:v+1], ms=residual[:, v:v+1], npix_x=nx, npix_y=ny,
+                               pixsize_x=delx, pixsize_y=dely, epsilon=1e-7, do_wstacking=True,
                                nthreads=args.ncpu)
         plt.figure(v)
         plt.imshow(dirty[v])
