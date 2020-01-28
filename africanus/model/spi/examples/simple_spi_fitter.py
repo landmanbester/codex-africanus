@@ -483,8 +483,4 @@ if __name__ == "__main__":
 
     print("Using %i threads" % args.ncpu)
 
-    print(args.dont_convolve)
-
-    quit()
-
     main(args)
