@@ -247,6 +247,9 @@ def create_parser():
                    "Default is to write all of them")
     p.add_argument("--padding_frac", default=0.2, type=float,
                    help="Padding factor for FFT's.")
+    p.add_argument("--dont_convolve", action="store_true",
+                   help="Passing this flag bypasses the convolution "
+                   "by the clean beam")
     return p
 
 
@@ -314,12 +317,13 @@ def main(args):
         print(freqs)
     print("Reference frequency is %3.2e Hz " % ref_freq)
 
-    # get the Gaussian convolution kernel
-    xx, yy = np.meshgrid(l_coord, m_coord)
-    gausskern = Gaussian2D(xx, yy, beampars)
+    if not args.dont_convolve:
+        # get the Gaussian convolution kernel
+        xx, yy = np.meshgrid(l_coord, m_coord)
+        gausskern = Gaussian2D(xx, yy, beampars)
 
-    # Convolve model with Gaussian restroring beam at lowest frequency
-    model = convolve_model(model, gausskern, args)
+        # Convolve model with Gaussian restroring beam at lowest frequency
+        model = convolve_model(model, gausskern, args)
 
     # set threshold
     if args.fitsresidual is not None:
@@ -457,7 +461,7 @@ def main(args):
         print("Wrote I0 map to %s" % name)
 
     # save clean beam for consistency check
-    if 'c' in args.output:
+    if 'c' in args.output and not args.dont_convolve:
         hdu = fits.PrimaryHDU(header=new_hdr)
         hdu.data = gausskern
         name = outfile + 'clean-beam.fits'
@@ -478,5 +482,9 @@ if __name__ == "__main__":
         args.ncpu = multiprocessing.cpu_count()
 
     print("Using %i threads" % args.ncpu)
+
+    print(args.dont_convolve)
+
+    quit()
 
     main(args)
