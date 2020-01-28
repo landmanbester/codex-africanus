@@ -255,12 +255,13 @@ def create_parser():
 
 def main(args):
 
-    ref_hdr = fits.getheader(args.fitsresidual)
+    
     if args.beampars is None:
+        rhdr = fits.getheader(args.fitsresidual)
         print("Attempting to take beampars from residual fits header")
-        emaj = ref_hdr['BMAJ1']
-        emin = ref_hdr['BMIN1']
-        pa = ref_hdr['BPA1']
+        emaj = rhdr['BMAJ1']
+        emin = rhdr['BMIN1']
+        pa = rhdr['BPA1']
         beampars = (emaj, emin, pa)
     else:
         beampars = tuple(args.beampars)
@@ -433,7 +434,7 @@ def main(args):
 
     new_hdr = {}
     for key in hdr_keys:
-        new_hdr[key] = ref_hdr[key]
+        new_hdr[key] = mhdr[key]
 
     if freq_axis == 3:
         new_hdr["NAXIS3"] = 1
