@@ -339,8 +339,7 @@ def main(args):
         print("No residual provided. Setting  threshold i.t.o dynamic range. "
               "Max dynamic range is %i" % args.maxDR)
         threshold = model.max()/args.maxDR
-        if args.channelweights is None:
-            rms_cube = None
+        rms_cube = None
 
     print("Threshold set to %f Jy." % threshold)
 
