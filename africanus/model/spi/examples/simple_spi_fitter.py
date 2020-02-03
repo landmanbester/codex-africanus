@@ -109,6 +109,7 @@ def convolve_model(model, gausskern, args):
     # Convolve model with Gaussian kernel
     convmodel = fft(iFs(np.pad(model, padding, mode='constant'), axes=ax),
                     ax, args.ncpu)
+
     convmodel *= gausskernhat
     return Fs(ifft(convmodel, ax, args.ncpu, lastsize),
               axes=ax)[:, unpad_l, unpad_m]
@@ -299,7 +300,7 @@ def main(args):
     delta_m = mhdr['CDELT2']
     m_coord = np.arange(1 - refpix_m, 1 + npix_m - refpix_m)*delta_m
 
-    print("Image shape = ", (npix_l, npix_m))
+    print("Image shape = ", (npix_m, npix_l))
 
     # get frequencies
     if mhdr["CTYPE4"] == 'FREQ':
@@ -364,8 +365,6 @@ def main(args):
                          "Max of convolved model is %3.2e" % model.max())
     fitcube = model[:, maskindices[:, 0], maskindices[:, 1]].T
 
-    print(xx.shape, yy.shape, maskindices.shape)
-
     # get primary beam at source locations
     if args.beammodel is not None:
         beam_source = interpolate_beam(xx, yy, maskindices, freqs, args)
@@ -425,7 +424,7 @@ def main(args):
         print("Wrote reconstructed cube to %s" % name)
 
     if args.beammodel is not None and 'b' in args.output:
-        beam_map = np.zeros((nband, npix_l, npix_m))
+        beam_map = np.zeros((nband, npix_m, npix_l))
         beam_map[:, maskindices[:, 0], maskindices[:, 1]] = beam_source.T
         if freq_axis == 3:
             hdu.data = beam_map[None, :, :, :]
