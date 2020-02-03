@@ -7,6 +7,7 @@ import dask
 import dask.array as da
 import numpy as np
 from astropy.io import fits
+from pyrap.tables import table
 import warnings
 from africanus.model.spi.dask import fit_spi_components
 iFs = np.fft.ifftshift
@@ -120,6 +121,14 @@ def interpolate_beam(xx, yy, maskindices, freqs, args):
 
     lm_source = np.vstack((l_source.ravel(), m_source.ravel())).T
 
+    # # get ms info required to compute paralactic angles
+    # utime = []
+    # for ms_name in args.ms:
+    #     ms = table(ms)
+    #     times = ms.getcol('TIME')
+    #     utimes, time_bin_counts = np.unique(time, return_counts=True)
+    #     utime.append(np.unique())
+
     ntime = 1
     nant = 1
     nband = freqs.size
@@ -208,6 +217,9 @@ def create_parser():
                                 formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--fitsmodel", type=str, required=True)
     p.add_argument("--fitsresidual", type=str)
+    p.add_argument("--ms", nargs="+", type=str, 
+                   help="Mesurement sets used to make the image. \n"
+                   "Used to get paralactic angles if doing primary beam correction")
     p.add_argument('--outfile', type=str,
                    help="Path to output directory. \n"
                         "Placed next to input model if outfile not provided.")
@@ -381,8 +393,8 @@ def main(args):
                                            np.float64(ref_freq)).compute()
     print("Done. Writing output.")
 
-    alphamap = np.zeros([npix_l, npix_m])
-    i0map = np.zeros([npix_l, npix_m])
+    alphamap = np.zeros_like(model[0], dtype=model.dtype)
+    i0map = np.zeros_like(model[0], dtype=model.dtype)
     alphamap[maskindices[:, 0], maskindices[:, 1]] = alpha
     i0map[maskindices[:, 0], maskindices[:, 1]] = Iref
 
