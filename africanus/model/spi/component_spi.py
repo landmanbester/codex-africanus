@@ -37,7 +37,7 @@ def _fit_spi_components_impl(data, weights, freqs, freq0, out,
                 hess00 += jac[0, v] * weights[v] * jac[0, v]
                 hess01 += jac[0, v] * weights[v] * jac[1, v]
                 hess11 += jac[1, v] * weights[v] * jac[1, v]
-            det = hess00 * hess11 - hess01**2
+            det = hess00 * hess11 - hess01**2 + 1e-10  # jitter for stability
             alphak = alphap + (hess11 * jr0 - hess01 * jr1)/det
             i0k = i0p + (-hess01 * jr0 + hess00 * jr1)/det
             eps = np.maximum(np.abs(alphak - alphap), np.abs(i0k - i0p))

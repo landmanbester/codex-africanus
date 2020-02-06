@@ -44,19 +44,18 @@ except:
 
 def Gaussian2D(xin, yin, GaussPar=(1., 1., 0.)):
     S0, S1, PA = GaussPar
-    PA = 90 + PA
-    SMaj = np.max([S0, S1])
-    SMin = np.min([S0, S1])
-    A = np.array([[1. / SMaj ** 2, 0],
-                  [0, 1. / SMin ** 2]])
+    Smaj = np.maximum(S0, S1)
+    Smin = np.minimum(S0, S1)
+    A = np.array([[1. / Smin ** 2, 0],
+                  [0, 1. / Smaj ** 2]])
 
-    c, s, t = np.cos, np.sin, PA
+    c, s, t = np.cos, np.sin, np.deg2rad(-PA)
     R = np.array([[c(t), -s(t)],
                   [s(t), c(t)]])
     A = np.dot(np.dot(R.T, A), R)
     sOut = xin.shape
-    # only compute the result where necessary
-    extent = (5 * SMaj)**2
+    # only compute the result out to 5 * emaj
+    extent = (5 * Smaj)**2
     xflat = xin.squeeze()
     yflat = yin.squeeze()
     ind = np.argwhere(xflat**2 + yflat**2 <= extent).squeeze()
@@ -67,7 +66,7 @@ def Gaussian2D(xin, yin, GaussPar=(1., 1., 0.)):
     # need to adjust for the fact that GaussPar corresponds to FWHM
     fwhm_conv = 2*np.sqrt(2*np.log(2))
     tmp = np.exp(-fwhm_conv*R)
-    gausskern = np.zeros_like(xflat, dtype=np.float64)
+    gausskern = np.zeros(xflat.shape, dtype=np.float64)
     gausskern[idx, idy] = tmp
     return np.ascontiguousarray(gausskern.reshape(sOut),
                                 dtype=np.float64)
@@ -115,12 +114,9 @@ def convolve_model(model, gausskern, args):
               axes=ax)[:, unpad_l, unpad_m]
 
 
-def interpolate_beam(xx, yy, maskindices, freqs, args):
+def interpolate_beam(xx, yy, freqs, args):
     print("Interpolating beam")
-    l_source = xx[maskindices[:, 0], maskindices[:, 1]]
-    m_source = yy[maskindices[:, 0], maskindices[:, 1]]
-
-    lm_source = np.vstack((l_source.ravel(), m_source.ravel())).T
+    lm_source = np.vstack((xx.ravel(), yy.ravel())).T
 
     # # get ms info required to compute paralactic angles
     # utime = []
@@ -142,32 +138,33 @@ def interpolate_beam(xx, yy, maskindices, freqs, args):
     else:
         print("Loading fits beam patterns from %s" % args.beammodel)
         from glob import glob
-        paths = glob(args.beammodel + '_**_**.fits')
+        paths = glob(args.beammodel + '**_**.fits')
         beam_hdr = None
         for path in paths:
-            if 'xx' in path or 'XX' in path or 'rr' in path or 'RR' in path:
-                if 're' in path:
-                    corr1_re = fits.getdata(path)
+            if 'XX'.lower() in path[-10::]: # or 'RR'.lower() in path:
+                if 're' in path[-7::]:
+                    corr1_re = load_fits_contiguous(path)
                     if beam_hdr is None:
                         beam_hdr = fits.getheader(path)
-                elif 'im' in path:
-                    corr1_im = fits.getdata(path)
+                elif 'im' in path[-7::]:
+                    corr1_im = load_fits_contiguous(path)
                 else:
                     raise NotImplementedError("Only re/im patterns supported")
-            elif 'yy' in path or 'YY' in path or 'll' in path or 'LL' in path:
-                if 're' in path:
-                    corr2_re = fits.getdata(path)
-                elif 'im' in path:
-                    corr2_im = fits.getdata(path)
+            elif 'YY'.lower() in path[-10::]: # or 'LL'.lower() in path:
+                if 're' in path[-7::]:
+                    corr2_re = load_fits_contiguous(path)
+                elif 'im' in path[-7::]:
+                    corr2_im = load_fits_contiguous(path)
                 else:
                     raise NotImplementedError("Only re/im patterns supported")
-        # get Stokes I amplitude
+        # get power beam
         beam_amp = (corr1_re**2 + corr1_im**2 + corr2_re**2 + corr2_im**2)/2.0
+
         # get cube in correct shape for interpolation code
         beam_amp = np.ascontiguousarray(np.transpose(beam_amp, (1, 2, 0))
                                         [:, :, :, None, None])
         # get cube info
-        if beam_hdr['CUNIT1'] != "DEG" and beam_hdr['CUNIT1'] != "deg":
+        if beam_hdr['CUNIT1'].lower() != "deg":
             raise ValueError("Beam image units must be in degrees")
         npix_l = beam_hdr['NAXIS1']
         refpix_l = beam_hdr['CRPIX1']
@@ -175,7 +172,7 @@ def interpolate_beam(xx, yy, maskindices, freqs, args):
         l_min = (1 - refpix_l)*delta_l
         l_max = (1 + npix_l - refpix_l)*delta_l
 
-        if beam_hdr['CUNIT2'] != "DEG" and beam_hdr['CUNIT2'] != "deg":
+        if beam_hdr['CUNIT2'].lower() != "deg":
             raise ValueError("Beam image units must be in degrees")
         npix_m = beam_hdr['NAXIS2']
         refpix_m = beam_hdr['CRPIX2']
@@ -183,14 +180,16 @@ def interpolate_beam(xx, yy, maskindices, freqs, args):
         m_min = (1 - refpix_m)*delta_m
         m_max = (1 + npix_m - refpix_m)*delta_m
 
-        if (l_min > l_source.min() or m_min > m_source.min() or
-                l_max < l_source.max() or m_max < m_source.max()):
+        print("Supplied beam has shape ", beam_amp.shape)
+
+        if (l_min > lm_source[:, 0].min() or m_min > lm_source[:, 1].min() or
+                l_max < lm_source[:, 0].max() or m_max < lm_source[:, 1].max()):
             raise ValueError("The supplied beam is not large enough")
 
         beam_extents = np.array([[l_min, l_max], [m_min, m_max]])
 
         # get frequencies
-        if beam_hdr["CTYPE3"] != 'FREQ':
+        if beam_hdr["CTYPE3"].lower() != 'freq':
             raise ValueError(
                 "Cubes are assumed to be in format [nchan, nx, ny]")
         nchan = beam_hdr['NAXIS3']
@@ -204,12 +203,26 @@ def interpolate_beam(xx, yy, maskindices, freqs, args):
             with np.printoptions(precision=2):
                 print(bfreqs)
 
-        # LB - dask probably not necessary for small problem
+        # interpolate beam
         from africanus.rime.fast_beam_cubes import beam_cube_dde
+        # from africanus.rime.dask import beam_cube_dde
+        # beam_amp = da.from_array(beam_amp, chunks=beam_amp.shape)
+        # beam_extents = da.from_array(beam_extents, chunks=beam_extents.shape)
+        # bfreqs = da.from_array(bfreqs, chunks=bfreqs.shape)
+        # lm_source = da.from_array(lm_source, chunks=lm_source.shape)
+        # parangles = da.from_array(parangles, chunks=parangles.shape)
+        # point_errs = da.from_array(point_errs, chunks=point_errs.shape)
+        # ant_scale = da.from_array(ant_scale, chunks=ant_scale.shape)
+        # freqs = da.from_array(freqs, chunks=freqs.shape)
         beam_source = beam_cube_dde(beam_amp, beam_extents, bfreqs,
                                     lm_source, parangles, point_errs,
-                                    ant_scale, freqs).squeeze()
-        return beam_source
+                                    ant_scale, freqs).squeeze() #.compute()
+        # average over time/ant
+
+        # reshape to image shape
+        print("Beam shape b = ", beam_source.shape)
+        beam_source = np.transpose(beam_source, axes=(1, 0))
+        return beam_source.squeeze().reshape((freqs.size, *xx.shape))
 
 
 def create_parser():
@@ -266,12 +279,26 @@ def create_parser():
     return p
 
 
+def load_fits_contiguous(name):
+    arr = fits.getdata(name).squeeze()
+    # transpose spatial axes (f -> c contiguous)
+    arr = np.transpose(arr, axes=(0, 2, 1))[:, ::-1]
+    return np.ascontiguousarray(arr, dtype=np.float64)
+
+# def save_fits_contiguous(arr, hdu, name):
+#     hdu.data = np.transpose(arr, axes=(0, 2, 1))[:, ::-1].astype(np.float32)
+
 def main(args):
 
     
     if args.beampars is None:
-        rhdr = fits.getheader(args.fitsresidual)
         print("Attempting to take beampars from residual fits header")
+        try:
+            rhdr = fits.getheader(args.fitsresidual)
+        except KeyError:
+            raise RuntimeError("Either provide a residual with beam "
+                               "information or pass them in using --beampars "
+                               "argument")
         emaj = rhdr['BMAJ1']
         emin = rhdr['BMIN1']
         pa = rhdr['BPA1']
@@ -280,37 +307,37 @@ def main(args):
         beampars = tuple(args.beampars)
         # emaj, emin, pa = args.beampars
     print("Using emaj = %3.2e, emin = %3.2e, PA = %3.2e" % beampars)
+    print(beampars[-1])
 
-    # load images
-    model = np.ascontiguousarray(fits.getdata(args.fitsmodel).squeeze(),
-                                 dtype=np.float64)
+    # load model image
+    model = load_fits_contiguous(args.fitsmodel)
     mhdr = fits.getheader(args.fitsmodel)
 
-    if mhdr['CUNIT1'] != "DEG" and mhdr['CUNIT1'] != "deg":
-        raise ValueError("Image units must be in degrees")
+    if mhdr['CUNIT1'].lower() != "deg":
+        raise ValueError("Image coordinates must be in degrees")
     npix_l = mhdr['NAXIS1']
     refpix_l = mhdr['CRPIX1']
     delta_l = mhdr['CDELT1']
     l_coord = np.arange(1 - refpix_l, 1 + npix_l - refpix_l)*delta_l
 
-    if mhdr['CUNIT2'] != "DEG" and mhdr['CUNIT2'] != "deg":
-        raise ValueError("Image units must be in degrees")
+    if mhdr['CUNIT2'].lower() != "deg":
+        raise ValueError("Image coordinates must be in degrees")
     npix_m = mhdr['NAXIS2']
     refpix_m = mhdr['CRPIX2']
     delta_m = mhdr['CDELT2']
     m_coord = np.arange(1 - refpix_m, 1 + npix_m - refpix_m)*delta_m
 
-    print("Image shape = ", (npix_m, npix_l))
+    print("Image shape = ", (npix_l, npix_m))
 
     # get frequencies
-    if mhdr["CTYPE4"] == 'FREQ':
+    if mhdr["CTYPE4"].lower() == 'freq':
         freq_axis = 4
         nband = mhdr['NAXIS4']
         refpix_nu = mhdr['CRPIX4']
         delta_nu = mhdr['CDELT4']  # assumes units are Hz
         ref_freq = mhdr['CRVAL4']
         ncorr = mhdr['NAXIS3']
-    elif mhdr["CTYPE3"] == 'FREQ':
+    elif mhdr["CTYPE3"].lower() == 'freq':
         freq_axis = 3
         nband = mhdr['NAXIS3']
         refpix_nu = mhdr['CRPIX3']
@@ -333,7 +360,7 @@ def main(args):
 
     if not args.dont_convolve:
         # get the Gaussian convolution kernel
-        xx, yy = np.meshgrid(l_coord, m_coord)
+        xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij')
         gausskern = Gaussian2D(xx, yy, beampars)
 
         # Convolve model with Gaussian restroring beam at lowest frequency
@@ -341,7 +368,7 @@ def main(args):
 
     # set threshold
     if args.fitsresidual is not None:
-        resid = fits.getdata(args.fitsresidual).squeeze().astype(np.float64)
+        resid = load_fits_contiguous(args.fitsresidual)
         rms = np.std(resid)
         rms_cube = np.std(resid.reshape(nband, npix_l*npix_m), axis=1).ravel()
         threshold = args.threshold * rms
@@ -367,7 +394,8 @@ def main(args):
 
     # get primary beam at source locations
     if args.beammodel is not None:
-        beam_source = interpolate_beam(xx, yy, maskindices, freqs, args)
+        beam_image = interpolate_beam(xx, yy, freqs, args)
+        beam_source = beam_image[:, maskindices[:, 0], maskindices[:, 1]].T
         # correct cube
         fitcube /= beam_source
 
@@ -392,8 +420,8 @@ def main(args):
                                            np.float64(ref_freq)).compute()
     print("Done. Writing output.")
 
-    alphamap = np.zeros_like(model[0], dtype=model.dtype)
-    i0map = np.zeros_like(model[0], dtype=model.dtype)
+    alphamap = np.zeros(model[0].shape, dtype=model.dtype)
+    i0map = np.zeros(model[0].shape, dtype=model.dtype)
     alphamap[maskindices[:, 0], maskindices[:, 1]] = alpha
     i0map[maskindices[:, 0], maskindices[:, 1]] = Iref
 
@@ -416,20 +444,18 @@ def main(args):
             (freqs[:, None, None]/ref_freq)**alphamap[None, :, :]
         # save it
         if freq_axis == 3:
-            hdu.data = Irec_cube[None, :, :, :]
+            hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[None, :, :, ::-1]
         elif freq_axis == 4:
-            hdu.data = Irec_cube[:, None, :, :]
+            hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[:, None, :, ::-1]
         name = outfile + 'Irec_cube.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote reconstructed cube to %s" % name)
 
     if args.beammodel is not None and 'b' in args.output:
-        beam_map = np.zeros((nband, npix_m, npix_l))
-        beam_map[:, maskindices[:, 0], maskindices[:, 1]] = beam_source.T
         if freq_axis == 3:
-            hdu.data = beam_map[None, :, :, :]
+            hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[None, :, :, ::-1]
         elif freq_axis == 4:
-            hdu.data = beam_map[:, None, :, :]
+            hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[:, None, :, ::-1]
         name = outfile + 'interpolated_beam_cube.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote interpolated beam cube to %s" % name)
@@ -458,7 +484,7 @@ def main(args):
     # save alpha map
     if 'a' in args.output:
         hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = alphamap
+        hdu.data = alphamap.T[::-1].astype(np.float32)
         name = outfile + 'alpha.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote alpha map to %s" % name)
@@ -466,7 +492,7 @@ def main(args):
     # save I0 map
     if 'i' in args.output:
         hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = i0map
+        hdu.data = i0map.T[::-1].astype(np.float32)
         name = outfile + 'I0.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote I0 map to %s" % name)
@@ -474,7 +500,7 @@ def main(args):
     # save clean beam for consistency check
     if 'c' in args.output and not args.dont_convolve:
         hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = gausskern
+        hdu.data = gausskern.T[::-1].astype(np.float32)
         name = outfile + 'clean-beam.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote clean beam to %s" % name)
