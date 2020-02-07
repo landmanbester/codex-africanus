@@ -357,7 +357,7 @@ def create_parser():
                         "automatically. \n"
                         "Only real and imaginary beam models currently "
                         "supported.")
-    p.add_argument('--output', default='aeikIbc', type=str,
+    p.add_argument('--output', default='aeikIbcm', type=str,
                    help="Outputs to write. Letter correspond to: \n"
                    "a - alpha map \n"
                    "e - alpha error map \n"
@@ -366,6 +366,7 @@ def create_parser():
                    "I - reconstructed cube form alpha and I0 \n"
                    "b - interpolated beam \n"
                    "c - restoring beam used for convolution \n"
+                   "m - convolved model \n"
                    "Default is to write all of them")
     p.add_argument("--padding_frac", default=0.2, type=float,
                    help="Padding factor for FFT's.")
@@ -388,6 +389,41 @@ def load_fits_contiguous(name):
     # transpose spatial axes (f -> c contiguous)
     arr = np.transpose(arr, axes=(0, 2, 1))[:, ::-1]
     return np.ascontiguousarray(arr, dtype=np.float64)
+
+def set_header_info(mhdr, ref_freq, freq_axis, args):
+    hdr_keys = ['SIMPLE', 'BITPIX', 'NAXIS', 'NAXIS1', 'NAXIS2', 'NAXIS3',
+                'NAXIS4', 'BUNIT', 'BMAJ', 'BMIN', 'BPA', 'EQUINOX', 'BTYPE',
+                'TELESCOP', 'OBSERVER', 'OBJECT', 'ORIGIN', 'CTYPE1', 'CTYPE2',
+                'CTYPE3', 'CTYPE4', 'CRPIX1', 'CRPIX2', 'CRPIX3', 'CRPIX4',
+                'CRVAL1', 'CRVAL2', 'CRVAL3', 'CRVAL4', 'CDELT1', 'CDELT2',
+                'CDELT3', 'CDELT4', 'CUNIT1', 'CUNIT2', 'CUNIT3', 'CUNIT4',
+                'SPECSYS', 'DATE-OBS']
+
+    new_hdr = {}
+    for key in hdr_keys:
+        new_hdr[key] = mhdr[key]
+
+    if freq_axis == 3:
+        new_hdr["NAXIS3"] = 1
+        new_hdr["CRVAL3"] = ref_freq
+    elif freq_axis == 4:
+        new_hdr["NAXIS4"] = 1
+        new_hdr["CRVAL4"] = ref_freq
+
+    new_hdr = fits.Header(new_hdr)
+
+    # save next to model if no outfile is provided
+    if args.outfile is None:
+        # find last /
+        tmp = args.fitsmodel[::-1]
+        idx = tmp.find('/')
+        if idx != -1:
+            outfile = args.fitsmodel[0:-idx]
+        else:
+            outfile = 'image-'
+    else:
+        outfile = args.outfile
+    return new_hdr, outfile
 
 def main(args):
 
@@ -460,14 +496,36 @@ def main(args):
         print(freqs)
     print("Reference frequency is %3.2e Hz " % ref_freq)
 
+    new_hdr, outfile = set_header_info(mhdr, ref_freq, freq_axis, args)
+
     xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij')
 
     if not args.dont_convolve:
         # get the Gaussian convolution kernel
         gausskern = Gaussian2D(xx, yy, beampars)
 
+        # save clean beam for consistency check
+        if 'c' in args.output:
+            hdu = fits.PrimaryHDU(header=new_hdr)
+            hdu.data = gausskern.T[:, ::-1].astype(np.float32)
+            name = outfile + 'clean-beam.fits'
+            hdu.writeto(name, overwrite=True)
+            print("Wrote clean beam to %s" % name)
+
         # Convolve model with Gaussian restroring beam at lowest frequency
         model = convolve_model(model, gausskern, args)
+
+        # save clean beam for consistency check
+        if 'm' in args.output:
+            hdu = fits.PrimaryHDU(header=mhdr)
+            # save it
+            if freq_axis == 3:
+                hdu.data = np.transpose(model, axes=(0, 2, 1))[None, :, :, ::-1]
+            elif freq_axis == 4:
+                hdu.data = np.transpose(model, axes=(0, 2, 1))[:, None, :, ::-1]
+            name = outfile + 'convolved_model.fits'
+            hdu.writeto(name, overwrite=True)
+            print("Wrote convolved model to %s" % name)
 
     # set threshold
     if args.fitsresidual is not None:
@@ -536,18 +594,6 @@ def main(args):
     i0map[maskindices[:, 0], maskindices[:, 1]] = Iref
     i0_err_map[maskindices[:, 0], maskindices[:, 1]] = i0_err
 
-    # save next to model if no outfile is provided
-    if args.outfile is None:
-        # find last /
-        tmp = args.fitsmodel[::-1]
-        idx = tmp.find('/')
-        if idx != -1:
-            outfile = args.fitsmodel[0:-idx]
-        else:
-            outfile = 'image-'
-    else:
-        outfile = args.outfile
-
     hdu = fits.PrimaryHDU(header=mhdr)
     if 'I' in args.output:
         # get the reconstructed cube
@@ -570,27 +616,6 @@ def main(args):
         name = outfile + 'interpolated_beam_cube.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote interpolated beam cube to %s" % name)
-
-    hdr_keys = ['SIMPLE', 'BITPIX', 'NAXIS', 'NAXIS1', 'NAXIS2', 'NAXIS3',
-                'NAXIS4', 'BUNIT', 'BMAJ', 'BMIN', 'BPA', 'EQUINOX', 'BTYPE',
-                'TELESCOP', 'OBSERVER', 'OBJECT', 'ORIGIN', 'CTYPE1', 'CTYPE2',
-                'CTYPE3', 'CTYPE4', 'CRPIX1', 'CRPIX2', 'CRPIX3', 'CRPIX4',
-                'CRVAL1', 'CRVAL2', 'CRVAL3', 'CRVAL4', 'CDELT1', 'CDELT2',
-                'CDELT3', 'CDELT4', 'CUNIT1', 'CUNIT2', 'CUNIT3', 'CUNIT4',
-                'SPECSYS', 'DATE-OBS']
-
-    new_hdr = {}
-    for key in hdr_keys:
-        new_hdr[key] = mhdr[key]
-
-    if freq_axis == 3:
-        new_hdr["NAXIS3"] = 1
-        new_hdr["CRVAL3"] = ref_freq
-    elif freq_axis == 4:
-        new_hdr["NAXIS4"] = 1
-        new_hdr["CRVAL4"] = ref_freq
-
-    new_hdr = fits.Header(new_hdr)
 
     # save alpha map
     if 'a' in args.output:
@@ -624,13 +649,7 @@ def main(args):
         hdu.writeto(name, overwrite=True)
         print("Wrote I0 map to %s" % name)
 
-    # save clean beam for consistency check
-    if 'c' in args.output and not args.dont_convolve:
-        hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = gausskern.T[:, ::-1].astype(np.float32)
-        name = outfile + 'clean-beam.fits'
-        hdu.writeto(name, overwrite=True)
-        print("Wrote clean beam to %s" % name)
+    
 
     print("All done here")
 
