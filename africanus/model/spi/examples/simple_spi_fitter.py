@@ -357,10 +357,12 @@ def create_parser():
                         "automatically. \n"
                         "Only real and imaginary beam models currently "
                         "supported.")
-    p.add_argument('--output', default='aiIbc', type=str,
+    p.add_argument('--output', default='aeikIbc', type=str,
                    help="Outputs to write. Letter correspond to: \n"
                    "a - alpha map \n"
+                   "e - alpha error map \n"
                    "i - I0 map \n"
+                   "k - I0 error map \n"
                    "I - reconstructed cube form alpha and I0 \n"
                    "b - interpolated beam \n"
                    "c - restoring beam used for convolution \n"
@@ -521,14 +523,18 @@ def main(args):
     freqsdask = da.from_array(freqs.astype(np.float64), chunks=(nband))
 
     print("Fitting %i components" % ncomps)
-    alpha, _, Iref, _ = fit_spi_components(fitcube, weights, freqsdask,
+    alpha, alpha_err, Iref, i0_err = fit_spi_components(fitcube, weights, freqsdask,
                                            np.float64(ref_freq)).compute()
     print("Done. Writing output.")
 
     alphamap = np.zeros(model[0].shape, dtype=model.dtype)
+    alpha_err_map = np.zeros(model[0].shape, dtype=model.dtype)
     i0map = np.zeros(model[0].shape, dtype=model.dtype)
+    i0_err_map = np.zeros(model[0].shape, dtype=model.dtype)
     alphamap[maskindices[:, 0], maskindices[:, 1]] = alpha
+    alpha_err_map[maskindices[:, 0], maskindices[:, 1]] = alpha_err
     i0map[maskindices[:, 0], maskindices[:, 1]] = Iref
+    i0_err_map[maskindices[:, 0], maskindices[:, 1]] = i0_err
 
     # save next to model if no outfile is provided
     if args.outfile is None:
@@ -594,11 +600,27 @@ def main(args):
         hdu.writeto(name, overwrite=True)
         print("Wrote alpha map to %s" % name)
 
+    # save alpha error map
+    if 'e' in args.output:
+        hdu = fits.PrimaryHDU(header=new_hdr)
+        hdu.data = alpha_err_map.T[:, ::-1].astype(np.float32)
+        name = outfile + 'alpha_err.fits'
+        hdu.writeto(name, overwrite=True)
+        print("Wrote alpha map to %s" % name)
+
     # save I0 map
     if 'i' in args.output:
         hdu = fits.PrimaryHDU(header=new_hdr)
         hdu.data = i0map.T[:, ::-1].astype(np.float32)
         name = outfile + 'I0.fits'
+        hdu.writeto(name, overwrite=True)
+        print("Wrote I0 map to %s" % name)
+
+    # save I0 error map
+    if 'i' in args.output:
+        hdu = fits.PrimaryHDU(header=new_hdr)
+        hdu.data = i0_err_map.T[:, ::-1].astype(np.float32)
+        name = outfile + 'I0_err.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote I0 map to %s" % name)
 
