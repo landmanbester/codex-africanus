@@ -6,10 +6,13 @@ import argparse
 import dask
 import dask.array as da
 import numpy as np
+from africanus.util.numba import jit
 from astropy.io import fits
 from pyrap.tables import table
 import warnings
 from africanus.model.spi.dask import fit_spi_components
+from africanus.rime import parallactic_angles
+from daskms import xds_from_ms
 iFs = np.fft.ifftshift
 Fs = np.fft.fftshift
 
@@ -113,116 +116,205 @@ def convolve_model(model, gausskern, args):
     return Fs(ifft(convmodel, ax, args.ncpu, lastsize),
               axes=ax)[:, unpad_l, unpad_m]
 
+@jit(nopython=True, nogil=True, cache=True)
+def _unflagged_counts(flags, time_idx, out):
+    for i in range(time_idx.size):
+            ilow = time_idx[i]
+            ihigh = time_idx[i+1]
+            out[i] = np.sum(~flags[ilow:ihigh])
+    return out
 
-def interpolate_beam(xx, yy, freqs, args):
-    print("Interpolating beam")
-    lm_source = np.vstack((xx.ravel(), yy.ravel())).T
-
-    # # get ms info required to compute paralactic angles
-    # utime = []
-    # for ms_name in args.ms:
-    #     ms = table(ms)
-    #     times = ms.getcol('TIME')
-    #     utimes, time_bin_counts = np.unique(time, return_counts=True)
-    #     utime.append(np.unique())
-
-    ntime = 1
-    nant = 1
+def extract_dde_info(args, freqs):
+    """
+    Computes paramactic angles, antenna scaling and pointing information
+    required for beam interpolation. 
+    """
+    # get ms info required to compute paralactic angles and weighted sum
     nband = freqs.size
-    parangles = np.zeros((ntime, nant,), dtype=np.float64)
-    ant_scale = np.ones((nant, nband, 2), dtype=np.float64)
-    point_errs = np.zeros((ntime, nant, nband, 2), dtype=np.float64)
+    if args.ms is not None:
+        utimes = []
+        unflag_counts = []
+        ant_pos = None
+        phase_dir = None
+        for ms_name in args.ms:
+            # get antenna positions
+            ant = table(ms_name + '::ANTENNA')
+            if ant_pos is None:
+                ant_pos = ant.getcol('POSITION')
+            else: # check all are the same
+                tmp = ant.getcol('POSITION')
+                if not np.array_equal(ant_pos, tmp):
+                    raise ValueError("Antenna positions not the same across measurement sets")
+            
+            # get phase center for field
+            field = table(ms_name + '::FIELD')
+            if phase_dir is None:
+                phase_dir = field.getcol('PHASE_DIR')[args.field].squeeze()
+            else:
+                tmp = field.getcol('PHASE_DIR')[args.field].squeeze()
+                if not np.array_equal(phase_dir, tmp):
+                    raise ValueError('Phase direction not teh same across measurement sets')
 
-    if args.beammodel == "eidos":
-        raise NotImplementedError("eidos is coming!!!")
+            # get unique times and count flags
+            xds = xds_from_ms(ms_name, columns=["TIME", "FLAG_ROW"], group_cols=["FIELD_ID"])[args.field]
+            utime, time_idx = np.unique(xds.TIME.data.compute(), return_index=True)
+            ntime = utime.size
+            utimes.append(utime)
+        
+            flags = xds.FLAG_ROW.data.compute()
+            unflag_count = _unflagged_counts(flags.astype(np.int32), time_idx, np.zeros(ntime, dtype=np.int32))
+            unflag_counts.append(unflag_count)
+
+        utimes = np.concatenate(utimes)
+        unflag_counts = np.concatenate(unflag_counts)
+        ntimes = utimes.size
+        
+        # compute paralactic angles
+        parangles = parallactic_angles(utimes, ant_pos, phase_dir)
+
+        # mean over antanna nant -> 1
+        parangles = np.mean(parangles, axis=1, keepdims=True)
+        nant = 1
+
+        # beam_cube_dde requirements
+        ant_scale = np.ones((nant, nband, 2), dtype=np.float64)
+        point_errs = np.zeros((ntimes, nant, nband, 2), dtype=np.float64)
+
+        return (da.from_array(parangles, chunks=(ntimes//args.ncpu, nant)),
+                da.from_array(ant_scale, chunks=ant_scale.shape),
+                da.from_array(point_errs, chunks=point_errs.shape),
+                unflag_counts,
+                True)
     else:
-        print("Loading fits beam patterns from %s" % args.beammodel)
-        from glob import glob
-        paths = glob(args.beammodel + '**_**.fits')
-        beam_hdr = None
-        for path in paths:
-            if 'XX'.lower() in path[-10::]: # or 'RR'.lower() in path:
-                if 're' in path[-7::]:
-                    corr1_re = load_fits_contiguous(path)
-                    if beam_hdr is None:
-                        beam_hdr = fits.getheader(path)
-                elif 'im' in path[-7::]:
-                    corr1_im = load_fits_contiguous(path)
-                else:
-                    raise NotImplementedError("Only re/im patterns supported")
-            elif 'YY'.lower() in path[-10::]: # or 'LL'.lower() in path:
-                if 're' in path[-7::]:
-                    corr2_re = load_fits_contiguous(path)
-                elif 'im' in path[-7::]:
-                    corr2_im = load_fits_contiguous(path)
-                else:
-                    raise NotImplementedError("Only re/im patterns supported")
-        # get power beam
-        beam_amp = (corr1_re**2 + corr1_im**2 + corr2_re**2 + corr2_im**2)/2.0
+        ntimes = 1
+        nant = 1
+        parangles = np.zeros((ntimes, nant,), dtype=np.float64)    
+        ant_scale = np.ones((nant, nband, 2), dtype=np.float64)
+        point_errs = np.zeros((ntimes, nant, nband, 2), dtype=np.float64)
+        unflag_counts = np.array([1])
+        
+        return (parangles, ant_scale, point_errs, unflag_counts, False)
 
-        # get cube in correct shape for interpolation code
-        beam_amp = np.ascontiguousarray(np.transpose(beam_amp, (1, 2, 0))
-                                        [:, :, :, None, None])
-        # get cube info
-        if beam_hdr['CUNIT1'].lower() != "deg":
-            raise ValueError("Beam image units must be in degrees")
-        npix_l = beam_hdr['NAXIS1']
-        refpix_l = beam_hdr['CRPIX1']
-        delta_l = beam_hdr['CDELT1']
-        l_min = (1 - refpix_l)*delta_l
-        l_max = (1 + npix_l - refpix_l)*delta_l
 
-        if beam_hdr['CUNIT2'].lower() != "deg":
-            raise ValueError("Beam image units must be in degrees")
-        npix_m = beam_hdr['NAXIS2']
-        refpix_m = beam_hdr['CRPIX2']
-        delta_m = beam_hdr['CDELT2']
-        m_min = (1 - refpix_m)*delta_m
-        m_max = (1 + npix_m - refpix_m)*delta_m
+def make_power_beam(args, lm_source, freqs, use_dask):
+    print("Loading fits beam patterns from %s" % args.beammodel)
+    from glob import glob
+    paths = glob(args.beammodel + '**_**.fits')
+    beam_hdr = None
+    if args.corr_type == 'linear':
+        corr1 = 'XX'
+        corr2 = 'YY'
+    elif args.corr_type == 'circular':
+        corr1 = 'LL'
+        corr2 = 'RR'
+    else:
+        raise KeyError("Unknown corr_type supplied. Only 'linear' or 'circular' supported")
 
-        print("Supplied beam has shape ", beam_amp.shape)
+    for path in paths:
+        if corr1.lower() in path[-10::]:
+            if 're' in path[-7::]:
+                corr1_re = load_fits_contiguous(path)
+                if beam_hdr is None:
+                    beam_hdr = fits.getheader(path)
+            elif 'im' in path[-7::]:
+                corr1_im = load_fits_contiguous(path)
+            else:
+                raise NotImplementedError("Only re/im patterns supported")
+        elif corr2.lower() in path[-10::]:
+            if 're' in path[-7::]:
+                corr2_re = load_fits_contiguous(path)
+            elif 'im' in path[-7::]:
+                corr2_im = load_fits_contiguous(path)
+            else:
+                raise NotImplementedError("Only re/im patterns supported")
+    
+    # get power beam
+    beam_amp = (corr1_re**2 + corr1_im**2 + corr2_re**2 + corr2_im**2)/2.0
 
-        if (l_min > lm_source[:, 0].min() or m_min > lm_source[:, 1].min() or
-                l_max < lm_source[:, 0].max() or m_max < lm_source[:, 1].max()):
-            raise ValueError("The supplied beam is not large enough")
+    # get cube in correct shape for interpolation code
+    beam_amp = np.ascontiguousarray(np.transpose(beam_amp, (1, 2, 0))
+                                    [:, :, :, None, None])
+    # get cube info
+    if beam_hdr['CUNIT1'].lower() != "deg":
+        raise ValueError("Beam image units must be in degrees")
+    npix_l = beam_hdr['NAXIS1']
+    refpix_l = beam_hdr['CRPIX1']
+    delta_l = beam_hdr['CDELT1']
+    l_min = (1 - refpix_l)*delta_l
+    l_max = (1 + npix_l - refpix_l)*delta_l
 
-        beam_extents = np.array([[l_min, l_max], [m_min, m_max]])
+    if beam_hdr['CUNIT2'].lower() != "deg":
+        raise ValueError("Beam image units must be in degrees")
+    npix_m = beam_hdr['NAXIS2']
+    refpix_m = beam_hdr['CRPIX2']
+    delta_m = beam_hdr['CDELT2']
+    m_min = (1 - refpix_m)*delta_m
+    m_max = (1 + npix_m - refpix_m)*delta_m
 
-        # get frequencies
-        if beam_hdr["CTYPE3"].lower() != 'freq':
-            raise ValueError(
-                "Cubes are assumed to be in format [nchan, nx, ny]")
-        nchan = beam_hdr['NAXIS3']
-        refpix = beam_hdr['CRPIX3']
-        delta = beam_hdr['CDELT3']  # assumes units are Hz
-        freq0 = beam_hdr['CRVAL3']
-        bfreqs = freq0 + np.arange(1 - refpix, 1 + nchan - refpix) * delta
-        if bfreqs[0] > freqs[0] or bfreqs[-1] < freqs[-1]:
-            warnings.warn("The supplied beam does not have sufficient "
-                          "bandwidth. Beam frequencies:")
-            with np.printoptions(precision=2):
-                print(bfreqs)
+    print("Supplied beam has shape ", beam_amp.shape)
 
-        # interpolate beam
-        from africanus.rime.fast_beam_cubes import beam_cube_dde
-        # from africanus.rime.dask import beam_cube_dde
-        # beam_amp = da.from_array(beam_amp, chunks=beam_amp.shape)
-        # beam_extents = da.from_array(beam_extents, chunks=beam_extents.shape)
-        # bfreqs = da.from_array(bfreqs, chunks=bfreqs.shape)
-        # lm_source = da.from_array(lm_source, chunks=lm_source.shape)
-        # parangles = da.from_array(parangles, chunks=parangles.shape)
-        # point_errs = da.from_array(point_errs, chunks=point_errs.shape)
-        # ant_scale = da.from_array(ant_scale, chunks=ant_scale.shape)
-        # freqs = da.from_array(freqs, chunks=freqs.shape)
-        beam_source = beam_cube_dde(beam_amp, beam_extents, bfreqs,
+    if (l_min > lm_source[:, 0].min() or m_min > lm_source[:, 1].min() or
+            l_max < lm_source[:, 0].max() or m_max < lm_source[:, 1].max()):
+        raise ValueError("The supplied beam is not large enough")
+
+    beam_extents = np.array([[l_min, l_max], [m_min, m_max]])
+
+    # get frequencies
+    if beam_hdr["CTYPE3"].lower() != 'freq':
+        raise ValueError(
+            "Cubes are assumed to be in format [nchan, nx, ny]")
+    nchan = beam_hdr['NAXIS3']
+    refpix = beam_hdr['CRPIX3']
+    delta = beam_hdr['CDELT3']  # assumes units are Hz
+    freq0 = beam_hdr['CRVAL3']
+    bfreqs = freq0 + np.arange(1 - refpix, 1 + nchan - refpix) * delta
+    if bfreqs[0] > freqs[0] or bfreqs[-1] < freqs[-1]:
+        warnings.warn("The supplied beam does not have sufficient "
+                        "bandwidth. Beam frequencies:")
+        with np.printoptions(precision=2):
+            print(bfreqs)
+
+    if use_dask:
+        return (da.from_array(beam_amp, chunks=beam_amp.shape),
+                da.from_array(beam_extents, chunks=beam_extents.shape), 
+                da.from_array(bfreqs, bfreqs.shape))
+    else:
+        return beam_amp, beam_extents, bfreqs
+
+def interpolate_beam(ll, mm, freqs, args):
+    """
+    Interpolate beam to image coordinates and optionally compute average
+    over time if MS is provoded
+    """
+
+    print("Interpolating beam")
+    parangles, ant_scale, point_errs, unflag_counts, use_dask = extract_dde_info(args, freqs)
+
+    lm_source = np.vstack((ll.ravel(), mm.ravel())).T
+    beam_amp, beam_extents, bfreqs = make_power_beam(args, lm_source, freqs, use_dask)
+
+    # interpolate beam
+    if use_dask:
+        from africanus.rime.dask import beam_cube_dde
+        lm_source = da.from_array(lm_source, chunks=lm_source.shape)
+        freqs = da.from_array(freqs, chunks=freqs.shape)
+        beam_image = beam_cube_dde(beam_amp, beam_extents, bfreqs,
                                     lm_source, parangles, point_errs,
-                                    ant_scale, freqs).squeeze() #.compute()
-        # average over time/ant
+                                    ant_scale, freqs).compute().squeeze()
+        # average over time
+        beam_image = (np.sum(beam_image * unflag_counts[None, :, None], axis=1)/np.sum(unflag_counts)).squeeze()
 
-        # reshape to image shape
-        print("Beam shape b = ", beam_source.shape)
-        beam_source = np.transpose(beam_source, axes=(1, 0))
-        return beam_source.squeeze().reshape((freqs.size, *xx.shape))
+    else:
+        from africanus.rime.fast_beam_cubes import beam_cube_dde
+        beam_image = beam_cube_dde(beam_amp, beam_extents, bfreqs,
+                                    lm_source, parangles, point_errs,
+                                    ant_scale, freqs).squeeze()
+    
+    
+
+    # reshape to image shape
+    beam_source = np.transpose(beam_image, axes=(1, 0))
+    return beam_source.squeeze().reshape((freqs.size, *ll.shape))
 
 
 def create_parser():
@@ -234,6 +326,8 @@ def create_parser():
     p.add_argument("--ms", nargs="+", type=str, 
                    help="Mesurement sets used to make the image. \n"
                    "Used to get paralactic angles if doing primary beam correction")
+    p.add_argument("--field", type=int, default=0,
+                   help="Field ID")
     p.add_argument('--outfile', type=str,
                    help="Path to output directory. \n"
                         "Placed next to input model if outfile not provided.")
@@ -276,6 +370,14 @@ def create_parser():
     p.add_argument("--dont_convolve", action="store_true",
                    help="Passing this flag bypasses the convolution "
                    "by the clean beam")
+    p.add_argument("--circularise_beam", action="store_true",
+                   help="Passing this flag will convolve with a circularised "
+                   "beam instead of an elliptical one")
+    p.add_argument("--corr_type", type=str, default='linear',
+                   help='Linear or circular feeds')
+    p.add_argument("--channel_weights", default=None, nargs='+', type=float,
+                   help="Per-channel weights to use during fit to frqequency axis. \n "
+                   "Only has an effect if no residual is passed in (for now).")
     return p
 
 
@@ -284,9 +386,6 @@ def load_fits_contiguous(name):
     # transpose spatial axes (f -> c contiguous)
     arr = np.transpose(arr, axes=(0, 2, 1))[:, ::-1]
     return np.ascontiguousarray(arr, dtype=np.float64)
-
-# def save_fits_contiguous(arr, hdu, name):
-#     hdu.data = np.transpose(arr, axes=(0, 2, 1))[:, ::-1].astype(np.float32)
 
 def main(args):
 
@@ -305,9 +404,10 @@ def main(args):
         beampars = (emaj, emin, pa)
     else:
         beampars = tuple(args.beampars)
-        # emaj, emin, pa = args.beampars
+        
+    if args.circularise_beam:
+        emaj = emin = (beampars[0] + beampars[1])/2.0
     print("Using emaj = %3.2e, emin = %3.2e, PA = %3.2e" % beampars)
-    print(beampars[-1])
 
     # load model image
     model = load_fits_contiguous(args.fitsmodel)
@@ -358,9 +458,10 @@ def main(args):
         print(freqs)
     print("Reference frequency is %3.2e Hz " % ref_freq)
 
+    xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij')
+
     if not args.dont_convolve:
         # get the Gaussian convolution kernel
-        xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij')
         gausskern = Gaussian2D(xx, yy, beampars)
 
         # Convolve model with Gaussian restroring beam at lowest frequency
@@ -406,8 +507,12 @@ def main(args):
         # normalise
         weights /= weights.max()
     else:
-        print("No residual provided. Using equal weights.")
-        weights = np.ones(nband, dtype=np.float64)
+        if args.channel_weights is not None:
+            weights = np.array(args.channel_weights)
+            print("Using provided channel weights")
+        else:
+            print("No residual or channel weights provided. Using equal weights.")
+            weights = np.ones(nband, dtype=np.float64)
 
     ncomps, _ = fitcube.shape
     fitcube = da.from_array(fitcube.astype(np.float64),
@@ -484,7 +589,7 @@ def main(args):
     # save alpha map
     if 'a' in args.output:
         hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = alphamap.T[::-1].astype(np.float32)
+        hdu.data = alphamap.T[:, ::-1].astype(np.float32)
         name = outfile + 'alpha.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote alpha map to %s" % name)
@@ -492,7 +597,7 @@ def main(args):
     # save I0 map
     if 'i' in args.output:
         hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = i0map.T[::-1].astype(np.float32)
+        hdu.data = i0map.T[:, ::-1].astype(np.float32)
         name = outfile + 'I0.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote I0 map to %s" % name)
@@ -500,7 +605,7 @@ def main(args):
     # save clean beam for consistency check
     if 'c' in args.output and not args.dont_convolve:
         hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = gausskern.T[::-1].astype(np.float32)
+        hdu.data = gausskern.T[:, ::-1].astype(np.float32)
         name = outfile + 'clean-beam.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote clean beam to %s" % name)
@@ -517,6 +622,11 @@ if __name__ == "__main__":
     else:
         import multiprocessing
         args.ncpu = multiprocessing.cpu_count()
+
+    GD = vars(args)
+    print('Input Options:')
+    for key in GD.keys():
+        print(key, ' = ', GD[key])
 
     print("Using %i threads" % args.ncpu)
 
