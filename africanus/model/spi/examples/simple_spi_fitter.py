@@ -445,7 +445,7 @@ def main(args):
         
     if args.circularise_beam:
         emaj = emin = (beampars[0] + beampars[1])/2.0
-    print("Using emaj = %3.2e, emin = %3.2e, PA = %3.2e" % beampars)
+    print("Using emaj = %3.2e, emin = %3.2e, PA = %3.2e \n" % beampars)
 
     # load model image
     model = load_fits_contiguous(args.fitsmodel)
@@ -494,13 +494,14 @@ def main(args):
     print("Cube frequencies:")
     with np.printoptions(precision=2):
         print(freqs)
-    print("Reference frequency is %3.2e Hz " % ref_freq)
+    print("Reference frequency is %3.2e Hz \n" % ref_freq)
 
     new_hdr, outfile = set_header_info(mhdr, ref_freq, freq_axis, args)
 
     xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij')
 
     if not args.dont_convolve:
+        print("Computing clean beam")
         # get the Gaussian convolution kernel
         gausskern = Gaussian2D(xx, yy, beampars)
 
@@ -510,7 +511,7 @@ def main(args):
             hdu.data = gausskern.T[:, ::-1].astype(np.float32)
             name = outfile + 'clean-beam.fits'
             hdu.writeto(name, overwrite=True)
-            print("Wrote clean beam to %s" % name)
+            print("Wrote clean beam to %s \n" % name)
 
         # Convolve model with Gaussian restroring beam at lowest frequency
         model = convolve_model(model, gausskern, args)
@@ -525,131 +526,137 @@ def main(args):
                 hdu.data = np.transpose(model, axes=(0, 2, 1))[:, None, :, ::-1]
             name = outfile + 'convolved_model.fits'
             hdu.writeto(name, overwrite=True)
-            print("Wrote convolved model to %s" % name)
+            print("Wrote convolved model to %s \n" % name)
 
-    # set threshold
-    if args.fitsresidual is not None:
-        resid = load_fits_contiguous(args.fitsresidual)
-        rms = np.std(resid)
-        rms_cube = np.std(resid.reshape(nband, npix_l*npix_m), axis=1).ravel()
-        threshold = args.threshold * rms
-        print("Setting cutoff threshold as %i times the rms "
-              "of the residual" % args.threshold)
-        del resid
-    else:
-        print("No residual provided. Setting  threshold i.t.o dynamic range. "
-              "Max dynamic range is %i" % args.maxDR)
-        threshold = model.max()/args.maxDR
-        rms_cube = None
-
-    print("Threshold set to %f Jy." % threshold)
-
-    # get pixels above threshold
-    minimage = np.amin(model, axis=0)
-    maskindices = np.argwhere(minimage > threshold)
-    if not maskindices.size:
-        raise ValueError("No components found above threshold. "
-                         "Try lowering your threshold."
-                         "Max of convolved model is %3.2e" % model.max())
-    fitcube = model[:, maskindices[:, 0], maskindices[:, 1]].T
-
-    # get primary beam at source locations
+    # interpolate primary beam to fits header and optionally average over time
     if args.beammodel is not None:
         beam_image = interpolate_beam(xx, yy, freqs, args)
-        beam_source = beam_image[:, maskindices[:, 0], maskindices[:, 1]].T
-        # correct cube
-        fitcube /= beam_source
 
-    # set weights for fit
-    if rms_cube is not None:
-        print("Using RMS in each imaging band to determine weights.")
-        weights = np.where(rms_cube > 0, 1.0/rms_cube**2, 0.0)
-        # normalise
-        weights /= weights.max()
-    else:
-        if args.channel_weights is not None:
-            weights = np.array(args.channel_weights)
-            print("Using provided channel weights")
+        if 'b' in args.output:
+            hdu = fits.PrimaryHDU(header=mhdr)
+            if freq_axis == 3:
+                hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[None, :, :, ::-1]
+            elif freq_axis == 4:
+                hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[:, None, :, ::-1]
+            name = outfile + 'interpolated_beam_cube.fits'
+            hdu.writeto(name, overwrite=True)
+            print("Wrote interpolated beam cube to %s \n" % name)
+
+
+    if any(l in args.output for l in ['a','e','i','k','I']):
+        # set threshold
+        if args.fitsresidual is not None:
+            resid = load_fits_contiguous(args.fitsresidual)
+            rms = np.std(resid)
+            rms_cube = np.std(resid.reshape(nband, npix_l*npix_m), axis=1).ravel()
+            threshold = args.threshold * rms
+            print("Setting cutoff threshold as %i times the rms "
+                "of the residual " % args.threshold)
+            del resid
         else:
-            print("No residual or channel weights provided. Using equal weights.")
-            weights = np.ones(nband, dtype=np.float64)
+            print("No residual provided. Setting  threshold i.t.o dynamic range. "
+                "Max dynamic range is %i " % args.maxDR)
+            threshold = model.max()/args.maxDR
+            rms_cube = None
 
-    ncomps, _ = fitcube.shape
-    fitcube = da.from_array(fitcube.astype(np.float64),
-                            chunks=(ncomps//args.ncpu, nband))
-    weights = da.from_array(weights.astype(np.float64), chunks=(nband))
-    freqsdask = da.from_array(freqs.astype(np.float64), chunks=(nband))
+        print("Threshold set to %f Jy. \n" % threshold)
 
-    print("Fitting %i components" % ncomps)
-    alpha, alpha_err, Iref, i0_err = fit_spi_components(fitcube, weights, freqsdask,
-                                           np.float64(ref_freq)).compute()
-    print("Done. Writing output.")
+        # get pixels above threshold
+        minimage = np.amin(model, axis=0)
+        maskindices = np.argwhere(minimage > threshold)
+        if not maskindices.size:
+            raise ValueError("No components found above threshold. "
+                            "Try lowering your threshold."
+                            "Max of convolved model is %3.2e" % model.max())
+        fitcube = model[:, maskindices[:, 0], maskindices[:, 1]].T
 
-    alphamap = np.zeros(model[0].shape, dtype=model.dtype)
-    alpha_err_map = np.zeros(model[0].shape, dtype=model.dtype)
-    i0map = np.zeros(model[0].shape, dtype=model.dtype)
-    i0_err_map = np.zeros(model[0].shape, dtype=model.dtype)
-    alphamap[maskindices[:, 0], maskindices[:, 1]] = alpha
-    alpha_err_map[maskindices[:, 0], maskindices[:, 1]] = alpha_err
-    i0map[maskindices[:, 0], maskindices[:, 1]] = Iref
-    i0_err_map[maskindices[:, 0], maskindices[:, 1]] = i0_err
+        # image space correction for primary beam
+        if args.beammodel is not None:
+            beam_source = beam_image[:, maskindices[:, 0], maskindices[:, 1]].T
+            # correct cube
+            fitcube /= beam_source
 
-    hdu = fits.PrimaryHDU(header=mhdr)
-    if 'I' in args.output:
-        # get the reconstructed cube
-        Irec_cube = i0map[None, :, :] * \
-            (freqs[:, None, None]/ref_freq)**alphamap[None, :, :]
-        # save it
-        if freq_axis == 3:
-            hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[None, :, :, ::-1]
-        elif freq_axis == 4:
-            hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[:, None, :, ::-1]
-        name = outfile + 'Irec_cube.fits'
-        hdu.writeto(name, overwrite=True)
-        print("Wrote reconstructed cube to %s" % name)
+        # set weights for fit
+        if rms_cube is not None:
+            print("Using RMS in each imaging band to determine weights. \n")
+            weights = np.where(rms_cube > 0, 1.0/rms_cube**2, 0.0)
+            # normalise
+            weights /= weights.max()
+        else:
+            if args.channel_weights is not None:
+                weights = np.array(args.channel_weights)
+                print("Using provided channel weights \n")
+            else:
+                print("No residual or channel weights provided. Using equal weights. \n")
+                weights = np.ones(nband, dtype=np.float64)
 
-    if args.beammodel is not None and 'b' in args.output:
-        if freq_axis == 3:
-            hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[None, :, :, ::-1]
-        elif freq_axis == 4:
-            hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[:, None, :, ::-1]
-        name = outfile + 'interpolated_beam_cube.fits'
-        hdu.writeto(name, overwrite=True)
-        print("Wrote interpolated beam cube to %s" % name)
+        ncomps, _ = fitcube.shape
+        fitcube = da.from_array(fitcube.astype(np.float64),
+                                chunks=(ncomps//args.ncpu, nband))
+        weights = da.from_array(weights.astype(np.float64), chunks=(nband))
+        freqsdask = da.from_array(freqs.astype(np.float64), chunks=(nband))
 
-    # save alpha map
-    if 'a' in args.output:
-        hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = alphamap.T[:, ::-1].astype(np.float32)
-        name = outfile + 'alpha.fits'
-        hdu.writeto(name, overwrite=True)
-        print("Wrote alpha map to %s" % name)
+        print("Fitting %i components" % ncomps)
+        alpha, alpha_err, Iref, i0_err = fit_spi_components(fitcube, weights, freqsdask,
+                                            np.float64(ref_freq)).compute()
+        print("Done. Writing output. \n")
 
-    # save alpha error map
-    if 'e' in args.output:
-        hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = alpha_err_map.T[:, ::-1].astype(np.float32)
-        name = outfile + 'alpha_err.fits'
-        hdu.writeto(name, overwrite=True)
-        print("Wrote alpha map to %s" % name)
+        alphamap = np.zeros(model[0].shape, dtype=model.dtype)
+        alpha_err_map = np.zeros(model[0].shape, dtype=model.dtype)
+        i0map = np.zeros(model[0].shape, dtype=model.dtype)
+        i0_err_map = np.zeros(model[0].shape, dtype=model.dtype)
+        alphamap[maskindices[:, 0], maskindices[:, 1]] = alpha
+        alpha_err_map[maskindices[:, 0], maskindices[:, 1]] = alpha_err
+        i0map[maskindices[:, 0], maskindices[:, 1]] = Iref
+        i0_err_map[maskindices[:, 0], maskindices[:, 1]] = i0_err
 
-    # save I0 map
-    if 'i' in args.output:
-        hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = i0map.T[:, ::-1].astype(np.float32)
-        name = outfile + 'I0.fits'
-        hdu.writeto(name, overwrite=True)
-        print("Wrote I0 map to %s" % name)
+        if 'I' in args.output:
+            hdu = fits.PrimaryHDU(header=mhdr)
+            # get the reconstructed cube
+            Irec_cube = i0map[None, :, :] * \
+                (freqs[:, None, None]/ref_freq)**alphamap[None, :, :]
+            # save it
+            if freq_axis == 3:
+                hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[None, :, :, ::-1]
+            elif freq_axis == 4:
+                hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[:, None, :, ::-1]
+            name = outfile + 'Irec_cube.fits'
+            hdu.writeto(name, overwrite=True)
+            print("Wrote reconstructed cube to %s" % name)
 
-    # save I0 error map
-    if 'i' in args.output:
-        hdu = fits.PrimaryHDU(header=new_hdr)
-        hdu.data = i0_err_map.T[:, ::-1].astype(np.float32)
-        name = outfile + 'I0_err.fits'
-        hdu.writeto(name, overwrite=True)
-        print("Wrote I0 map to %s" % name)
+        # save alpha map
+        if 'a' in args.output:
+            hdu = fits.PrimaryHDU(header=new_hdr)
+            hdu.data = alphamap.T[:, ::-1].astype(np.float32)
+            name = outfile + 'alpha.fits'
+            hdu.writeto(name, overwrite=True)
+            print("Wrote alpha map to %s" % name)
 
-    
+        # save alpha error map
+        if 'e' in args.output:
+            hdu = fits.PrimaryHDU(header=new_hdr)
+            hdu.data = alpha_err_map.T[:, ::-1].astype(np.float32)
+            name = outfile + 'alpha_err.fits'
+            hdu.writeto(name, overwrite=True)
+            print("Wrote alpha error map to %s" % name)
+
+        # save I0 map
+        if 'i' in args.output:
+            hdu = fits.PrimaryHDU(header=new_hdr)
+            hdu.data = i0map.T[:, ::-1].astype(np.float32)
+            name = outfile + 'I0.fits'
+            hdu.writeto(name, overwrite=True)
+            print("Wrote I0 map to %s" % name)
+
+        # save I0 error map
+        if 'i' in args.output:
+            hdu = fits.PrimaryHDU(header=new_hdr)
+            hdu.data = i0_err_map.T[:, ::-1].astype(np.float32)
+            name = outfile + 'I0_err.fits'
+            hdu.writeto(name, overwrite=True)
+            print("Wrote I0 error map to %s" % name)
+
+    print(' \n ')
 
     print("All done here")
 
@@ -664,11 +671,16 @@ if __name__ == "__main__":
         import multiprocessing
         args.ncpu = multiprocessing.cpu_count()
 
+    print(' \n ')
     GD = vars(args)
     print('Input Options:')
     for key in GD.keys():
         print(key, ' = ', GD[key])
 
+    print(' \n ')
+
     print("Using %i threads" % args.ncpu)
+
+    print(' \n ')
 
     main(args)
