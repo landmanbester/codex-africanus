@@ -116,6 +116,13 @@ def convolve_model(model, gausskern, args):
     return Fs(ifft(convmodel, ax, args.ncpu, lastsize),
               axes=ax)[:, unpad_l, unpad_m]
 
+
+# def weights_from_rms_window(residual, L, source_locs):
+#     nchan, nx, ny = residual.shape
+#     nsource = source_locs.shape[0]
+#     weights = np.zeros((nsource, nchan), dtype=residual.dtype)
+#     for 
+
 @jit(nopython=True, nogil=True, cache=True)
 def _unflagged_counts(flags, time_idx, out):
     for i in range(time_idx.size):
@@ -251,8 +258,6 @@ def make_power_beam(args, lm_source, freqs, use_dask):
     m_min = (1 - refpix_m)*delta_m
     m_max = (1 + npix_m - refpix_m)*delta_m
 
-    print("Supplied beam has shape ", beam_amp.shape)
-
     if (l_min > lm_source[:, 0].min() or m_min > lm_source[:, 1].min() or
             l_max < lm_source[:, 0].max() or m_max < lm_source[:, 1].max()):
         raise ValueError("The supplied beam is not large enough")
@@ -300,9 +305,11 @@ def interpolate_beam(ll, mm, freqs, args):
         freqs = da.from_array(freqs, chunks=freqs.shape)
         beam_image = beam_cube_dde(beam_amp, beam_extents, bfreqs,
                                     lm_source, parangles, point_errs,
-                                    ant_scale, freqs).compute().squeeze()
+                                    ant_scale, freqs).compute()[:, :, 0, :, 0 , 0]
         # average over time
-        beam_image = (np.sum(beam_image * unflag_counts[None, :, None], axis=1)/np.sum(unflag_counts)).squeeze()
+        print(beam_image.shape)
+        beam_image = (np.sum(beam_image * unflag_counts[None, :, None], axis=1)/np.sum(unflag_counts))
+        print(beam_image.shape)
 
     else:
         from africanus.rime.fast_beam_cubes import beam_cube_dde
@@ -385,9 +392,16 @@ def create_parser():
 
 
 def load_fits_contiguous(name):
-    arr = fits.getdata(name).squeeze()
-    # transpose spatial axes (f -> c contiguous)
-    arr = np.transpose(arr, axes=(0, 2, 1))[:, ::-1]
+    arr = fits.getdata(name)
+    if arr.ndim == 4: 
+        # figure out which axes to keep from header
+        hdr = fits.getheader(name)
+        if hdr["CTYPE4"].lower() == 'stokes':
+            arr = arr[0]
+        else:
+            arr = arr[:, 0]
+    # reverse last spatial axis then transpose (f -> c contiguous)
+    arr = np.transpose(arr[:, :, ::-1], axes=(0, 2, 1))
     return np.ascontiguousarray(arr, dtype=np.float64)
 
 def set_header_info(mhdr, ref_freq, freq_axis, args):
@@ -426,8 +440,6 @@ def set_header_info(mhdr, ref_freq, freq_axis, args):
     return new_hdr, outfile
 
 def main(args):
-
-    
     if args.beampars is None:
         print("Attempting to take beampars from residual fits header")
         try:
@@ -436,10 +448,16 @@ def main(args):
             raise RuntimeError("Either provide a residual with beam "
                                "information or pass them in using --beampars "
                                "argument")
-        emaj = rhdr['BMAJ1']
-        emin = rhdr['BMIN1']
-        pa = rhdr['BPA1']
-        beampars = (emaj, emin, pa)
+        if 'BMAJ1' in rhdr.keys():
+            emaj = rhdr['BMAJ1']
+            emin = rhdr['BMIN1']
+            pa = rhdr['BPA1']
+            beampars = (emaj, emin, pa)
+        elif 'BMAJ' in rhdr.keys():
+            emaj = rhdr['BMAJ']
+            emin = rhdr['BMIN']
+            pa = rhdr['BPA']
+            beampars = (emaj, emin, pa)
     else:
         beampars = tuple(args.beampars)
         
