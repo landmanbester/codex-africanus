@@ -166,6 +166,13 @@ def extract_dde_info(args, freqs):
             xds = xds_from_ms(ms_name, columns=["TIME", "FLAG_ROW"], group_cols=["FIELD_ID"])[args.field]
             utime, time_idx = np.unique(xds.TIME.data.compute(), return_index=True)
             ntime = utime.size
+            # extract subset of times
+            if args.sparsify_time > 1:
+                I = np.arange(0, ntime, args.sparsify_time)
+                utime = utime[I]
+                time_idx = time_idx[I]
+                ntime = utime.size
+            
             utimes.append(utime)
         
             flags = xds.FLAG_ROW.data.compute()
@@ -187,9 +194,9 @@ def extract_dde_info(args, freqs):
         ant_scale = np.ones((nant, nband, 2), dtype=np.float64)
         point_errs = np.zeros((ntimes, nant, nband, 2), dtype=np.float64)
 
-        return (da.from_array(parangles, chunks=(ntimes//args.ncpu, nant)),
+        return (parangles,
                 da.from_array(ant_scale, chunks=ant_scale.shape),
-                da.from_array(point_errs, chunks=point_errs.shape),
+                point_errs,
                 unflag_counts,
                 True)
     else:
@@ -291,7 +298,7 @@ def interpolate_beam(ll, mm, freqs, args):
     Interpolate beam to image coordinates and optionally compute average
     over time if MS is provoded
     """
-
+    nband = freqs.size
     print("Interpolating beam")
     parangles, ant_scale, point_errs, unflag_counts, use_dask = extract_dde_info(args, freqs)
 
@@ -303,14 +310,27 @@ def interpolate_beam(ll, mm, freqs, args):
         from africanus.rime.dask import beam_cube_dde
         lm_source = da.from_array(lm_source, chunks=lm_source.shape)
         freqs = da.from_array(freqs, chunks=freqs.shape)
-        beam_image = beam_cube_dde(beam_amp, beam_extents, bfreqs,
-                                    lm_source, parangles, point_errs,
-                                    ant_scale, freqs).compute()[:, :, 0, :, 0 , 0]
-        # average over time
-        print(beam_image.shape)
-        beam_image = (np.sum(beam_image * unflag_counts[None, :, None], axis=1)/np.sum(unflag_counts))
-        print(beam_image.shape)
-
+        # compute ncpu images at a time to avoid memory errors
+        ntimes = parangles.shape[0]
+        I = np.arange(0, ntimes, args.ncpu)
+        nchunks = I.size
+        I = np.append(I, ntimes)
+        beam_image = np.zeros((ll.size, 1, nband), dtype=beam_amp.dtype)
+        for i in range(nchunks):
+            ilow = I[i]
+            ihigh = I[i+1]
+            part_parangles = da.from_array(parangles[ilow:ihigh], chunks=(1, 1))
+            part_point_errs = da.from_array(point_errs[ilow:ihigh], chunks=(1, 1, freqs.size, 2))
+            # interpolate and remove redundant axes
+            part_beam_image = beam_cube_dde(beam_amp, beam_extents, bfreqs,
+                                        lm_source, part_parangles, part_point_errs,
+                                        ant_scale, freqs).compute()[:, :, 0, :, 0 , 0]
+            # weighted sum over time
+            beam_image += np.sum(part_beam_image * unflag_counts[None, ilow:ihigh, None], axis=1, keepdims=True)
+        # normalise by sum of weights
+        beam_image /= np.sum(unflag_counts)
+        # remove time axis
+        beam_image = beam_image[:, 0, :]
     else:
         from africanus.rime.fast_beam_cubes import beam_cube_dde
         beam_image = beam_cube_dde(beam_amp, beam_extents, bfreqs,
@@ -319,7 +339,7 @@ def interpolate_beam(ll, mm, freqs, args):
     
     
 
-    # reshape to image shape
+    # swap source and freq axes and reshape to image shape
     beam_source = np.transpose(beam_image, axes=(1, 0))
     return beam_source.squeeze().reshape((freqs.size, *ll.shape))
 
@@ -388,6 +408,8 @@ def create_parser():
     p.add_argument("--channel_weights", default=None, nargs='+', type=float,
                    help="Per-channel weights to use during fit to frqequency axis. \n "
                    "Only has an effect if no residual is passed in (for now).")
+    p.add_argument("--sparsify_time", type=int, default=1,
+                   help="Used to select a subset of time ")
     return p
 
 
