@@ -147,7 +147,7 @@ def main(args):
     for i in range(1, nband+1):
         mhdr['BMAJ' + str(i)] = beampars[0]
         mhdr['BMIN' + str(i)] = beampars[1]
-        mhdr['BPA' + str(i)] = np.rad2deg(beampars[2])
+        mhdr['BPA' + str(i)] = beampars[2]
 
     if args.ref_freq is not None and args.ref_freq != ref_freq:
         ref_freq = args.ref_freq

@@ -74,7 +74,7 @@ def main(args):
     for i in range(1, nchan+1):
         hdr['BMAJ' + str(i)] = beampars[0]
         hdr['BMIN' + str(i)] = beampars[1]
-        hdr['BPA' + str(i)] = np.rad2deg(beampars[2])
+        hdr['BPA' + str(i)] = beampars[2]
 
     # coodinate grid
     xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij') 

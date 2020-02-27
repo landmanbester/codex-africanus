@@ -65,7 +65,7 @@ def set_header_info(mhdr, ref_freq, freq_axis, args, beampars):
 
     new_hdr['BMAJ'] = beampars[0]
     new_hdr['BMIN'] = beampars[1]
-    new_hdr['BPA'] = np.rad2deg(beampars[2])
+    new_hdr['BPA'] = beampars[2]
 
     new_hdr = fits.Header(new_hdr)
 
