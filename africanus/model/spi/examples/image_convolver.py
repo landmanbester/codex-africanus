@@ -64,9 +64,9 @@ def main(args):
             beampars = tuple(args.psf_pars)
 
     if args.circ_psf:
-            e = (beampars[0] + beampars[1])/2.0
-            beampars[0] = e
-            beampars[1] = e
+        e = (beampars[0] + beampars[1])/2.0
+        beampars[0] = e
+        beampars[1] = e
     
     print("Using emaj = %3.2e, emin = %3.2e, PA = %3.2e \n" % beampars)
 
@@ -74,14 +74,14 @@ def main(args):
     for i in range(1, nchan+1):
         hdr['BMAJ' + str(i)] = beampars[0]
         hdr['BMIN' + str(i)] = beampars[1]
-        hdr['BPA' + str(i)] = beampars[2]
+        hdr['BPA' + str(i)] = np.rad2deg(beampars[2])
 
     # coodinate grid
     xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij') 
 
     # get padding
     npix_l, npix_m = xx.shape
-    pfrac = 1.2/2.0
+    pfrac = 0.2/2
     npad_l = int(pfrac*npix_l)
     npad_m = int(pfrac*npix_m)
     
@@ -163,9 +163,9 @@ def main(args):
     hdu = fits.PrimaryHDU(header=hdr)
     # save it
     if freq_axis == 3:
-        hdu.data = np.transpose(image, axes=(0, 2, 1))[None, :, :, ::-1]
+        hdu.data = np.transpose(image, axes=(0, 2, 1))[None, :, :, ::-1].astype(np.float32)
     elif freq_axis == 4:
-        hdu.data = np.transpose(image, axes=(0, 2, 1))[:, None, :, ::-1]
+        hdu.data = np.transpose(image, axes=(0, 2, 1))[:, None, :, ::-1].astype(np.float32)
     name = outfile + '.convolved.fits'
     hdu.writeto(name, overwrite=True)
     print("Wrote convolved model to %s \n" % name)

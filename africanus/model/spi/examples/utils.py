@@ -43,7 +43,7 @@ def load_fits_contiguous(name):
     arr = np.transpose(arr[:, :, ::-1], axes=(0, 2, 1))
     return np.ascontiguousarray(arr, dtype=np.float64)
 
-def set_header_info(mhdr, ref_freq, freq_axis, args):
+def set_header_info(mhdr, ref_freq, freq_axis, args, beampars):
     hdr_keys = ['SIMPLE', 'BITPIX', 'NAXIS', 'NAXIS1', 'NAXIS2', 'NAXIS3',
                 'NAXIS4', 'BUNIT', 'BMAJ', 'BMIN', 'BPA', 'EQUINOX', 'BTYPE',
                 'TELESCOP', 'OBSERVER', 'OBJECT', 'ORIGIN', 'CTYPE1', 'CTYPE2',
@@ -62,6 +62,10 @@ def set_header_info(mhdr, ref_freq, freq_axis, args):
     elif freq_axis == 4:
         new_hdr["NAXIS4"] = 1
         new_hdr["CRVAL4"] = ref_freq
+
+    new_hdr['BMAJ'] = beampars[0]
+    new_hdr['BMIN'] = beampars[1]
+    new_hdr['BPA'] = np.rad2deg(beampars[2])
 
     new_hdr = fits.Header(new_hdr)
 

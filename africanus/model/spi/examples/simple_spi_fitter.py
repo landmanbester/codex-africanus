@@ -11,17 +11,51 @@ from astropy.io import fits
 import warnings
 from africanus.model.spi.dask import fit_spi_components
 from africanus.model.spi.examples.utils import load_fits_contiguous, get_fits_freq_space_info, set_header_info, Gaussian2D
-from africanus.model.spi.examples.image_convolver import convolve_model
+from pypocketfft import r2c, c2r
+iFs = np.fft.ifftshift
+Fs = np.fft.fftshift
 
+def convolve_model(model, gausskern, args):
+    print("Doing FFT's")
+    # get padding
+    _, npix_l, npix_m = model.shape
+    pfrac = args.padding_frac/2.0
+    npad_l = int(pfrac*npix_l)
+    npad_m = int(pfrac*npix_m)
+    # get fast FFT sizes
+    from scipy.fftpack import next_fast_len
+    nfft = next_fast_len(npix_l + 2*npad_l)
+    npad_ll = (nfft - npix_l)//2
+    npad_lr = nfft - npix_l - npad_ll
+    nfft = next_fast_len(npix_m + 2*npad_m)
+    npad_ml = (nfft - npix_m)//2
+    npad_mr = nfft - npix_m - npad_ml
+    padding = ((0, 0), (npad_ll, npad_lr), (npad_ml, npad_mr))
+    unpad_l = slice(npad_ll, -npad_lr)
+    unpad_m = slice(npad_ml, -npad_mr)
+
+    ax = (1, 2)  # axes over which to perform fft
+    lastsize = npix_m + np.sum(padding[-1])
+
+    # get FT of convolution kernel
+    gausskern = iFs(np.pad(gausskern[None], padding, mode='constant'), axes=ax)
+    gausskernhat = r2c(gausskern, axes=ax, forward=True, nthreads=args.ncpu, inorm=0)
+
+    # Convolve model with Gaussian kernel
+    model = iFs(np.pad(model, padding, mode='constant'), axes=ax)
+    convmodel = r2c(model, axes=ax, forward=True, nthreads=args.ncpu, inorm=0)
+
+    convmodel *= gausskernhat
+    return Fs(c2r(convmodel, axes=ax, forward=False, lastsize=lastsize, inorm=2, nthreads=args.ncpu), axes=ax)[:, unpad_l, unpad_m]
 
 def create_parser():
     p = argparse.ArgumentParser(description='Simple spectral index fitting'
                                             'tool.',
                                 formatter_class=argparse.RawTextHelpFormatter)
-    p.add_argument("--model", type=str, required=True)
-    p.add_argument("--residual", type=str)
+    p.add_argument('-model', "--model", type=str, required=True)
+    p.add_argument('-residual', "--residual", type=str)
     p.add_argument('-o', '--output-filename', type=str,
-                   help="Path to output directory. \n"
+                   help="Path to output directory + prefix. \n"
                         "Placed next to input model if outfile not provided.")
     p.add_argument('-pp', '--psf-pars', default=None, nargs='+', type=float,
                    help="Beam parameters matching FWHM of restoring beam "
@@ -46,6 +80,8 @@ def create_parser():
                    help="Fits beam model to use. \n"
                         "Use power_beam_maker to make power beam "
                         "corresponding to image. ")
+    p.add_argument('-pb-min', '--pb-min', type=float, default=0.05,
+                   help="Set image to zero where pb falls below this value")
     p.add_argument('-products', '--products', default='aeikIbcm', type=str,
                    help="Outputs to write. Letter correspond to: \n"
                    "a - alpha map \n"
@@ -64,16 +100,16 @@ def create_parser():
     p.add_argument('-cw', "--channel_weights", default=None, nargs='+', type=float,
                    help="Per-channel weights to use during fit to frqequency axis. \n "
                    "Only has an effect if no residual is passed in (for now).")
-    p.add_argument('rf', '--ref-freq', default=None, type=np.float64,
+    p.add_argument('-rf', '--ref-freq', default=None, type=np.float64,
                    help='Refernce frequency at which the cube is saught. \n'
                    "Will overwrite in fits headers of output.")
     return p
 
 def main(args):
-    if args.pp is None:
+    if args.psf_pars is None:
         print("Attempting to take beampars from residual fits header")
         try:
-            rhdr = fits.getheader(args.fitsresidual)
+            rhdr = fits.getheader(args.residual)
         except KeyError:
             raise RuntimeError("Either provide a residual with beam "
                                "information or pass them in using --beampars "
@@ -91,8 +127,11 @@ def main(args):
     else:
         beampars = tuple(args.pp)
         
-    if args.cp:
-        emaj = emin = (beampars[0] + beampars[1])/2.0
+    if args.circ_psf:
+        e = (beampars[0] + beampars[1])/2.0
+        beampars[0] = e
+        beampars[1] = e
+    
     print("Using emaj = %3.2e, emin = %3.2e, PA = %3.2e \n" % beampars)
 
     # load model image
@@ -104,8 +143,14 @@ def main(args):
     npix_l = l_coord.size
     npix_m = m_coord.size
 
-    if args.rf is not None and args.rf != ref_freq:
-        ref_freq = args.rf
+    # update cube psf-pars
+    for i in range(1, nband+1):
+        mhdr['BMAJ' + str(i)] = beampars[0]
+        mhdr['BMIN' + str(i)] = beampars[1]
+        mhdr['BPA' + str(i)] = np.rad2deg(beampars[2])
+
+    if args.ref_freq is not None and args.ref_freq != ref_freq:
+        ref_freq = args.ref_freq
         print('Provided reference frequency does not match that of fits file. Will overwrite.')
 
     print("Cube frequencies:")
@@ -114,7 +159,7 @@ def main(args):
     print("Reference frequency is %3.2e Hz \n" % ref_freq)
 
     # LB - new header for cubes if ref_freqs differ
-    new_hdr = set_header_info(mhdr, ref_freq, freq_axis, args)
+    new_hdr = set_header_info(mhdr, ref_freq, freq_axis, args, beampars)
 
     # save next to model if no outfile is provided
     if args.output_filename is None:
@@ -126,6 +171,26 @@ def main(args):
         outfile = args.output_filename
 
     xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij')
+
+    # load beam 
+    if args.beam_model is not None:
+        bhdr = fits.getheader(args.beam_model)
+        l_coord_beam, m_coord_beam, freqs_beam, _, freq_axis = get_fits_freq_space_info(bhdr)
+        if not np.array_equal(l_coord_beam, l_coord):
+            raise ValueError("l coordinates of beam model do not match those of image. Use power_beam_maker to interpolate to fits header.")
+
+        if not np.array_equal(m_coord_beam, m_coord):
+            raise ValueError("m coordinates of beam model do not match those of image. Use power_beam_maker to interpolate to fits header.")
+
+        if not np.array_equal(freqs, freqs_beam):
+            raise ValueError("Freqs of beam model do not match those of image. Use power_beam_maker to interpolate to fits header.")
+
+        beam_image = load_fits_contiguous(args.beam_model)
+    else:
+        beam_image = np.ones(model.shape, np.float64)
+
+    # do beam correction
+    model = np.where(beam_image >= args.pb_min, model/beam_image, 0.0)
 
     if not args.dont_convolve:
         print("Computing clean beam")
@@ -140,11 +205,11 @@ def main(args):
             hdu.writeto(name, overwrite=True)
             print("Wrote clean psf to %s \n" % name)
 
-        # Convolve model with Gaussian restroring beam at lowest frequency
+        # Convolve model with Gaussian restoring beam at lowest frequency
         model = convolve_model(model, gausskern, args)
 
         # save convolved model
-        if 'm' in args.output:
+        if 'm' in args.products:
             hdu = fits.PrimaryHDU(header=mhdr)
             # save it
             if freq_axis == 3:
@@ -158,7 +223,7 @@ def main(args):
 
     # set threshold
     if args.residual is not None:
-        resid = load_fits_contiguous(args.fitsresidual)
+        resid = load_fits_contiguous(args.residual)
         l_res, m_res, freqs_res, ref_freq, freq_axis = get_fits_freq_space_info(mhdr)
         
         if not np.array_equal(l_res, l_coord):
@@ -192,12 +257,6 @@ def main(args):
                         "Try lowering your threshold."
                         "Max of convolved model is %3.2e" % model.max())
     fitcube = model[:, maskindices[:, 0], maskindices[:, 1]].T
-
-    # image space correction for primary beam
-    if args.bm is not None:
-        beam_source = beam_image[:, maskindices[:, 0], maskindices[:, 1]].T
-        # correct cube
-        fitcube /= beam_source
 
     # set weights for fit
     if rms_cube is not None:
@@ -233,49 +292,49 @@ def main(args):
     i0map[maskindices[:, 0], maskindices[:, 1]] = Iref
     i0_err_map[maskindices[:, 0], maskindices[:, 1]] = i0_err
 
-    if 'I' in args.output:
+    if 'I' in args.products:
         hdu = fits.PrimaryHDU(header=mhdr)
         # get the reconstructed cube
         Irec_cube = i0map[None, :, :] * \
             (freqs[:, None, None]/ref_freq)**alphamap[None, :, :]
         # save it
         if freq_axis == 3:
-            hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[None, :, :, ::-1]
+            hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[None, :, :, ::-1].astype(np.float32)
         elif freq_axis == 4:
-            hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[:, None, :, ::-1]
-        name = outfile + 'Irec_cube.fits'
+            hdu.data = np.transpose(Irec_cube, axes=(0, 2, 1))[:, None, :, ::-1].astype(np.float32)
+        name = outfile + '.Irec_cube.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote reconstructed cube to %s" % name)
 
     # save alpha map
-    if 'a' in args.output:
+    if 'a' in args.products:
         hdu = fits.PrimaryHDU(header=new_hdr)
         hdu.data = alphamap.T[:, ::-1].astype(np.float32)
-        name = outfile + 'alpha.fits'
+        name = outfile + '.alpha.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote alpha map to %s" % name)
 
     # save alpha error map
-    if 'e' in args.output:
+    if 'e' in args.products:
         hdu = fits.PrimaryHDU(header=new_hdr)
         hdu.data = alpha_err_map.T[:, ::-1].astype(np.float32)
-        name = outfile + 'alpha_err.fits'
+        name = outfile + '.alpha_err.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote alpha error map to %s" % name)
 
     # save I0 map
-    if 'i' in args.output:
+    if 'i' in args.products:
         hdu = fits.PrimaryHDU(header=new_hdr)
         hdu.data = i0map.T[:, ::-1].astype(np.float32)
-        name = outfile + 'I0.fits'
+        name = outfile + '.I0.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote I0 map to %s" % name)
 
     # save I0 error map
-    if 'i' in args.output:
+    if 'i' in args.products:
         hdu = fits.PrimaryHDU(header=new_hdr)
         hdu.data = i0_err_map.T[:, ::-1].astype(np.float32)
-        name = outfile + 'I0_err.fits'
+        name = outfile + '.I0_err.fits'
         hdu.writeto(name, overwrite=True)
         print("Wrote I0 error map to %s" % name)
 
