@@ -117,17 +117,17 @@ def main(args):
     new_hdr = set_header_info(mhdr, ref_freq, freq_axis, args)
 
     # save next to model if no outfile is provided
-    if args.o is None:
+    if args.output_filename is None:
         # strip .fits from model filename 
         tmp = args.model[::-1]
         idx = tmp.find('.')
         outfile = args.model[0:-idx]
     else:
-        outfile = args.o
+        outfile = args.output_filename
 
     xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij')
 
-    if not args.dc:
+    if not args.dont_convolve:
         print("Computing clean beam")
         # get the Gaussian convolution kernel
         gausskern = Gaussian2D(xx, yy, beampars)

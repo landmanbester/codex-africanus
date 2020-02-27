@@ -11,8 +11,8 @@ from astropy.io import fits
 import warnings
 from africanus.model.spi.dask import fit_spi_components
 from africanus.rime import parallactic_angles
-from africanus.model.spi.examples.utils import load_fits_contiguous
-from daskms import xds_from_ms
+from africanus.model.spi.examples.utils import load_fits_contiguous, get_fits_freq_space_info
+from daskms import xds_from_ms, xds_from_table
 
 @jit(nopython=True, nogil=True, cache=True)
 def _unflagged_counts(flags, time_idx, out):
@@ -36,22 +36,22 @@ def extract_dde_info(args, freqs):
         phase_dir = None
         for ms_name in args.ms:
             # get antenna positions
-            ant = table(ms_name + '::ANTENNA')
+            ant = xds_from_table(ms_name + '::ANTENNA')[0].compute()
             if ant_pos is None:
-                ant_pos = ant.getcol('POSITION')
+                ant_pos = ant['POSITION'].data
             else: # check all are the same
-                tmp = ant.getcol('POSITION')
+                tmp = ant['POSITION']
                 if not np.array_equal(ant_pos, tmp):
                     raise ValueError("Antenna positions not the same across measurement sets")
             
             # get phase center for field
-            field = table(ms_name + '::FIELD')
+            field = xds_from_table(ms_name + '::FIELD')[0].compute()
             if phase_dir is None:
-                phase_dir = field.getcol('PHASE_DIR')[args.field].squeeze()
+                phase_dir = field['PHASE_DIR'][args.field].data.squeeze()
             else:
-                tmp = field.getcol('PHASE_DIR')[args.field].squeeze()
+                tmp = field['PHASE_DIR'][args.field].data.squeeze()
                 if not np.array_equal(phase_dir, tmp):
-                    raise ValueError('Phase direction not teh same across measurement sets')
+                    raise ValueError('Phase direction not the same across measurement sets')
 
             # get unique times and count flags
             xds = xds_from_ms(ms_name, columns=["TIME", "FLAG_ROW"], group_cols=["FIELD_ID"])[args.field]
@@ -102,9 +102,9 @@ def extract_dde_info(args, freqs):
 
 
 def make_power_beam(args, lm_source, freqs, use_dask):
-    print("Loading fits beam patterns from %s" % args.beammodel)
+    print("Loading fits beam patterns from %s" % args.beam_model)
     from glob import glob
-    paths = glob(args.beammodel + '**_**.fits')
+    paths = glob(args.beam_model + '**_**.fits')
     beam_hdr = None
     if args.corr_type == 'linear':
         corr1 = 'XX'
@@ -236,19 +236,18 @@ def interpolate_beam(ll, mm, freqs, args):
 
 
 def create_parser():
-    p = argparse.ArgumentParser(description='Simple spectral index fitting'
-                                            'tool.',
+    p = argparse.ArgumentParser(description='Beam intrepolation tool.',
                                 formatter_class=argparse.RawTextHelpFormatter)
-    p.add_argument("--image", type=str, required=True)
-    p.add_argument("--ms", nargs="+", type=str, 
+    p.add_argument('-image', "--image", type=str, required=True)
+    p.add_argument('-ms', "--ms", nargs="+", type=str, 
                    help="Mesurement sets used to make the image. \n"
                    "Used to get paralactic angles if doing primary beam correction")
-    p.add_argument("--field", type=int, default=0,
+    p.add_argument('-f', "--field", type=int, default=0,
                    help="Field ID")
-    p.add_argument('--outfile', type=str,
+    p.add_argument('-o', '--output-filename', type=str,
                    help="Path to output directory. \n"
                         "Placed next to input model if outfile not provided.")
-    p.add_argument('--beam-model', default=None, type=str,
+    p.add_argument('-bm', '--beam-model', default=None, type=str,
                    help="Fits beam model to use. \n"
                         "It is assumed that the pattern is path_to_beam/"
                         "name_corr_re/im.fits. \n"
@@ -258,23 +257,34 @@ def create_parser():
                         "automatically. \n"
                         "Only real and imaginary beam models currently "
                         "supported.")
-    p.add_argument("--sparsify-time", type=int, default=1,
+    p.add_argument('-st', "--sparsify-time", type=int, default=1,
                    help="Used to select a subset of time ")
+    p.add_argument('-ncpu', '--ncpu', default=0, type=int,
+                   help="Number of threads to use. \n"
+                        "Default of zero means use all threads")
+    p.add_argument('-ct', '--corr-type', type=str, default='linear',
+                   help="Correlation typ i.e. linear or circular. ")
     return p
 
 def main(args):
+    # get coord info
+    hdr = fits.getheader(args.image)
+    l_coord, m_coord, freqs, _, freq_axis = get_fits_freq_space_info(hdr)
+    
+    xx, yy = np.meshgrid(l_coord, m_coord, indexing='ij')
+    
     # interpolate primary beam to fits header and optionally average over time
     beam_image = interpolate_beam(xx, yy, freqs, args)
 
-    if 'b' in args.output:
-        hdu = fits.PrimaryHDU(header=mhdr)
-        if freq_axis == 3:
-            hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[None, :, :, ::-1]
-        elif freq_axis == 4:
-            hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[:, None, :, ::-1]
-        name = outfile + 'interpolated_beam_cube.fits'
-        hdu.writeto(name, overwrite=True)
-        print("Wrote interpolated beam cube to %s \n" % name)
+
+    # 
+    hdu = fits.PrimaryHDU(header=hdr)
+    if freq_axis == 3:
+        hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[None, :, :, ::-1]
+    elif freq_axis == 4:
+        hdu.data =  np.transpose(beam_image, axes=(0, 2, 1))[:, None, :, ::-1]
+    hdu.writeto(args.output_filename, overwrite=True)
+    print("Wrote interpolated beam cube to %s \n" % args.output_filename)
 
 
     return
